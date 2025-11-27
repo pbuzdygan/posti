@@ -60,7 +60,7 @@ PROFILE_DATA_JSON = r"""{
             },
             {
                 "title": "Git clone repo",
-                "command": "git clone git@github.com:pbuzdygan/buzlab.git ~/github/buzlab",
+                "command": "git clone repo",
                 "confirm": true,
                 "enabled": true,
                 "description": "Clone repo with Your dotfiles"
@@ -74,19 +74,19 @@ PROFILE_DATA_JSON = r"""{
             },
             {
                 "title": "Stow execute",
-                "command": "stow -d ~/github/buzlab -t ~ dotfiles",
+                "command": "stow -d source -t target",
                 "confirm": true,
                 "enabled": true,
                 "description": "Link Your dotfiles from github to Your system using stow"
             },
             {
-                "title": "Instalacja oh-my-zsh",
+                "title": "Installation of oh-my-zsh",
                 "command": "wget https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh && chmod +x ./install.sh && sed -i 's/exec zsh -l/echo Done installing oh-my-zsh/g' install.sh && ./install.sh && rm ./install.sh",
                 "confirm": true,
                 "enabled": true
             },
             {
-                "title": "Instalacja pluginow oh-my-zsh",
+                "title": "Installation of plugins oh-my-zsh",
                 "command": "git clone https://github.com/zsh-users/zsh-autosuggestions ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autosuggestions && git clone https://github.com/zsh-users/zsh-syntax-highlighting.git ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-syntax-highlighting",
                 "confirm": true,
                 "enabled": true
