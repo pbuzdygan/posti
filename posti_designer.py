@@ -25,8 +25,8 @@ import stat
 import subprocess
 import tempfile
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFont
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QFont, QAction
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
@@ -378,6 +378,14 @@ class ProfileModel:
         }
 
 
+class StepListWidget(QListWidget):
+    reordered = Signal()
+
+    def dropEvent(self, event) -> None:  # type: ignore[override]
+        super().dropEvent(event)
+        self.reordered.emit()
+
+
 class ProfileDialog(QDialog):
     def __init__(
         self,
@@ -427,46 +435,61 @@ class DesignerWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("POSTI Forge")
         self.resize(1200, 780)
+        self.current_theme: str = "dark"
         self.current_file: Path | None = None
         self.profiles: Dict[str, ProfileModel] = {}
         self.profile_order: List[str] = []
         self._build_ui()
+        self._build_menus_and_toolbar()
+
+    def set_theme(self, theme: str) -> None:
+        app = QApplication.instance()
+        if app is None:
+            return
+        dark = app.property("darkTheme")
+        light = app.property("lightTheme")
+        if theme == "light" and isinstance(light, str):
+            app.setStyleSheet(light)
+            self.current_theme = "light"
+            self.light_theme_action.setChecked(True)
+            self.dark_theme_action.setChecked(False)
+        elif theme == "dark" and isinstance(dark, str):
+            app.setStyleSheet(dark)
+            self.current_theme = "dark"
+            self.dark_theme_action.setChecked(True)
+            self.light_theme_action.setChecked(False)
 
     def _build_ui(self) -> None:
         central = QWidget()
         self.setCentralWidget(central)
-        layout = QVBoxLayout(central)
+        main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(10, 8, 10, 8)
+        main_layout.setSpacing(8)
 
-        banner = QLabel("POSTI // FORGE YOUR AUTOMATION")
+        banner = QLabel("POSTI // Forge your automation")
+        banner.setObjectName("HeaderTitle")
         banner.setAlignment(Qt.AlignCenter)
-        banner.setStyleSheet(
-            "color: #39ff14; font-size: 26px; font-family: 'JetBrains Mono', monospace; font-weight: bold;"
-        )
-        layout.addWidget(banner)
+        main_layout.addWidget(banner)
 
-        subtitle = QLabel("Plan per-profile steps. Export a full posti.py with all menus baked in.")
+        subtitle = QLabel("Design your post‑install steps and export a ready‑to‑run posti.py script with selectable profiles.")
+        subtitle.setObjectName("HeaderSubtitle")
         subtitle.setAlignment(Qt.AlignCenter)
-        subtitle.setStyleSheet("color: #0ff; font-size: 14px; font-family: 'JetBrains Mono', monospace;")
-        layout.addWidget(subtitle)
+        main_layout.addWidget(subtitle)
 
-        toolbar = QHBoxLayout()
-        layout.addLayout(toolbar)
-
-        load_btn = QPushButton("Load POSTI export")
-        load_btn.clicked.connect(self.load_existing_file)
-        toolbar.addWidget(load_btn)
-
-        new_btn = QPushButton("Reset to blank project")
-        new_btn.clicked.connect(self.reset_project)
-        toolbar.addWidget(new_btn)
-
-        toolbar.addStretch(1)
+        project_row = QHBoxLayout()
+        project_row.setContentsMargins(0, 4, 0, 0)
+        main_layout.addLayout(project_row)
+        file_label_caption = QLabel("Current file:")
+        file_label_caption.setObjectName("SecondaryLabel")
+        project_row.addWidget(file_label_caption)
         self.file_label = QLabel("No file loaded")
-        self.file_label.setStyleSheet("color: #ccc; font-family: 'JetBrains Mono';")
-        toolbar.addWidget(self.file_label)
+        self.file_label.setObjectName("FileStatusLabel")
+        project_row.addWidget(self.file_label, 1)
 
         profile_row = QHBoxLayout()
-        layout.addLayout(profile_row)
+        profile_row.setContentsMargins(0, 0, 0, 0)
+        profile_row.setSpacing(6)
+        main_layout.addLayout(profile_row)
         profile_row.addWidget(QLabel("Profile"))
         self.profile_combo = QComboBox()
         self.profile_combo.currentIndexChanged.connect(self.switch_profile)
@@ -480,19 +503,29 @@ class DesignerWindow(QMainWindow):
         remove_profile_btn = QPushButton("Remove profile")
         remove_profile_btn.clicked.connect(self.remove_profile)
         profile_row.addWidget(remove_profile_btn)
-        layout.addSpacing(4)
+        main_layout.addSpacing(4)
 
-        splitter = QSplitter(Qt.Horizontal)
-        layout.addWidget(splitter, 1)
+        vertical_splitter = QSplitter(Qt.Vertical)
+        main_layout.addWidget(vertical_splitter, 1)
 
-        self.steps_list = QListWidget()
+        top_splitter = QSplitter(Qt.Horizontal)
+        vertical_splitter.addWidget(top_splitter)
+
+        self.steps_list = StepListWidget()
         self.steps_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.steps_list.setDragEnabled(True)
+        self.steps_list.setAcceptDrops(True)
+        self.steps_list.setDragDropMode(QAbstractItemView.InternalMove)
+        self.steps_list.setDefaultDropAction(Qt.MoveAction)
         self.steps_list.itemSelectionChanged.connect(self.populate_form_from_selection)
-        splitter.addWidget(self.steps_list)
+        self.steps_list.reordered.connect(self._sync_steps_from_list)
+        top_splitter.addWidget(self.steps_list)
 
         form = QWidget()
         form_layout = QVBoxLayout(form)
-        splitter.addWidget(form)
+        form_layout.setContentsMargins(6, 4, 6, 4)
+        form_layout.setSpacing(6)
+        top_splitter.addWidget(form)
 
         form_layout.addWidget(QLabel("Step title"))
         self.title_input = QLineEdit()
@@ -504,7 +537,9 @@ class DesignerWindow(QMainWindow):
 
         form_layout.addWidget(QLabel("Command"))
         self.command_input = QTextEdit()
-        self.command_input.setPlaceholderText("Shell command to execute for this step.")
+        self.command_input.setPlaceholderText(
+            "Shell command to execute for this step (use '&&' to chain sub-steps)."
+        )
         self.command_input.setFixedHeight(140)
         form_layout.addWidget(self.command_input)
 
@@ -512,6 +547,7 @@ class DesignerWindow(QMainWindow):
         form_layout.addWidget(self.confirm_check)
 
         button_row = QHBoxLayout()
+        button_row.setSpacing(6)
         form_layout.addLayout(button_row)
         add_btn = QPushButton("Add step")
         add_btn.clicked.connect(self.add_step)
@@ -524,6 +560,7 @@ class DesignerWindow(QMainWindow):
         button_row.addWidget(remove_btn)
 
         move_row = QHBoxLayout()
+        move_row.setSpacing(6)
         form_layout.addLayout(move_row)
         up_btn = QPushButton("Move up")
         up_btn.clicked.connect(lambda: self.move_step(-1))
@@ -545,8 +582,9 @@ class DesignerWindow(QMainWindow):
 
         form_layout.addStretch(1)
         status_row = QHBoxLayout()
+        status_row.setSpacing(8)
         self.status_label = QLabel("")
-        self.status_label.setStyleSheet("color: #0ff; font-style: italic;")
+        self.status_label.setObjectName("StatusLabel")
         status_row.addWidget(self.status_label)
         self.status_progress = QProgressBar()
         self.status_progress.setTextVisible(False)
@@ -556,39 +594,105 @@ class DesignerWindow(QMainWindow):
         form_layout.addLayout(status_row)
         self._status_timer: QTimer | None = None
 
+        preview_container = QWidget()
+        preview_container.setObjectName("PanelCard")
+        preview_layout = QVBoxLayout(preview_container)
+        preview_layout.setContentsMargins(6, 4, 6, 4)
+        preview_layout.setSpacing(6)
+        vertical_splitter.addWidget(preview_container)
+
         preview_label = QLabel("posti.py preview")
-        layout.addWidget(preview_label)
+        preview_label.setObjectName("SecondaryLabel")
+        preview_layout.addWidget(preview_label)
         self.preview = QPlainTextEdit()
         self.preview.setFont(QFont("JetBrains Mono", 10))
         self.preview.setReadOnly(True)
-        self.preview.setFixedHeight(220)
-        layout.addWidget(self.preview)
+        self.preview.setMinimumHeight(160)
+        self.preview.setObjectName("PreviewEditor")
+        preview_layout.addWidget(self.preview)
 
         preview_buttons = QHBoxLayout()
-        layout.addLayout(preview_buttons)
+        preview_layout.addLayout(preview_buttons)
         gen_btn = QPushButton("Generate preview")
+        gen_btn.setObjectName("PrimaryButton")
         gen_btn.clicked.connect(self.generate_script)
         preview_buttons.addWidget(gen_btn)
 
         copy_btn = QPushButton("Copy to clipboard")
+        copy_btn.setObjectName("SecondaryButton")
         copy_btn.clicked.connect(self.copy_preview)
         preview_buttons.addWidget(copy_btn)
 
-        save_as_btn = QPushButton("Save as new posti.py")
-        save_as_btn.clicked.connect(self.save_as_new)
-        preview_buttons.addWidget(save_as_btn)
-
-        save_btn = QPushButton("Overwrite loaded posti.py")
+        save_btn = QPushButton("Save changes to posti.py")
+        save_btn.setObjectName("PrimaryButton")
         save_btn.clicked.connect(self.save_over_existing)
         preview_buttons.addWidget(save_btn)
 
         binary_btn = QPushButton("Build standalone binary")
+        binary_btn.setObjectName("PrimaryButton")
         binary_btn.clicked.connect(self.build_binary)
         preview_buttons.addWidget(binary_btn)
         preview_buttons.addStretch(1)
 
+        vertical_splitter.setStretchFactor(0, 3)
+        vertical_splitter.setStretchFactor(1, 2)
+        top_splitter.setStretchFactor(0, 1)
+        top_splitter.setStretchFactor(1, 1)
+
         self.refresh_profile_combo()
         self.switch_profile(0)
+
+    def _build_menus_and_toolbar(self) -> None:
+        menu_bar = self.menuBar()
+
+        file_menu = menu_bar.addMenu("&File")
+        self.new_project_action = QAction("New project", self)
+        self.new_project_action.setShortcut("Ctrl+N")
+        self.new_project_action.triggered.connect(self.reset_project)
+        file_menu.addAction(self.new_project_action)
+
+        self.open_action = QAction("Open POSTI export…", self)
+        self.open_action.setShortcut("Ctrl+O")
+        self.open_action.triggered.connect(self.load_existing_file)
+        file_menu.addAction(self.open_action)
+
+        self.save_action = QAction("Save changes to posti.py", self)
+        self.save_action.setShortcut("Ctrl+S")
+        self.save_action.triggered.connect(self.save_over_existing)
+        file_menu.addAction(self.save_action)
+
+        file_menu.addSeparator()
+        exit_action = QAction("Exit", self)
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+
+        profile_menu = menu_bar.addMenu("&Profile")
+        add_profile_action = QAction("Add profile", self)
+        add_profile_action.triggered.connect(self.add_profile)
+        profile_menu.addAction(add_profile_action)
+        edit_profile_action = QAction("Edit profile", self)
+        edit_profile_action.triggered.connect(self.edit_profile)
+        profile_menu.addAction(edit_profile_action)
+        remove_profile_action = QAction("Remove profile", self)
+        remove_profile_action.triggered.connect(self.remove_profile)
+        profile_menu.addAction(remove_profile_action)
+
+        build_menu = menu_bar.addMenu("&Build")
+        self.build_binary_action = QAction("Build standalone binary", self)
+        self.build_binary_action.setShortcut("Ctrl+B")
+        self.build_binary_action.triggered.connect(self.build_binary)
+        build_menu.addAction(self.build_binary_action)
+
+        view_menu = menu_bar.addMenu("&View")
+        self.dark_theme_action = QAction("Dark theme", self, checkable=True)
+        self.light_theme_action = QAction("Light theme", self, checkable=True)
+        self.dark_theme_action.setChecked(True)
+        theme_group = QAction(self)
+        # Use toggled signals to switch themes
+        self.dark_theme_action.triggered.connect(lambda: self.set_theme("dark"))
+        self.light_theme_action.triggered.connect(lambda: self.set_theme("light"))
+        view_menu.addAction(self.dark_theme_action)
+        view_menu.addAction(self.light_theme_action)
 
     # -- profile utilities ------------------------------------------------
     def current_profile_key(self) -> str:
@@ -637,6 +741,9 @@ class DesignerWindow(QMainWindow):
             if not step.enabled:
                 label = f"{base:<70}[DISABLED]"
             item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, step)
+            if not step.enabled:
+                item.setForeground(Qt.gray)
             self.steps_list.addItem(item)
         for row in selected_rows:
             if 0 <= row < self.steps_list.count():
@@ -647,6 +754,21 @@ class DesignerWindow(QMainWindow):
             self.steps_list.setCurrentRow(-1)
         self.steps_list.blockSignals(False)
         self.populate_form_from_selection()
+
+    def _sync_steps_from_list(self) -> None:
+        if not self.profile_order:
+            return
+        profile = self.current_profile()
+        new_steps: List[StepModel] = []
+        for row in range(self.steps_list.count()):
+            item = self.steps_list.item(row)
+            step = item.data(Qt.UserRole)
+            if isinstance(step, StepModel):
+                new_steps.append(step)
+        if len(new_steps) != len(profile.steps):
+            return
+        profile.steps = new_steps
+        self.refresh_steps_list()
 
     # -- event handlers ---------------------------------------------------
     def switch_profile(self, index: int) -> None:
@@ -703,7 +825,7 @@ class DesignerWindow(QMainWindow):
         self.current_profile().steps.append(step)
         self.refresh_steps_list()
         self.populate_form(None)
-        self.flash_status("Step added.")
+        self.flash_status("Step added.", level="success")
 
     def update_step(self) -> None:
         if not self.ensure_profile_available():
@@ -724,7 +846,7 @@ class DesignerWindow(QMainWindow):
         profile.steps[index].description = description
         self.refresh_steps_list()
         self.steps_list.setCurrentRow(index)
-        self.flash_status("Step updated.")
+        self.flash_status("Step updated.", level="success")
 
     def remove_step(self) -> None:
         if not self.ensure_profile_available():
@@ -736,7 +858,7 @@ class DesignerWindow(QMainWindow):
         del profile.steps[index]
         self.refresh_steps_list()
         self.populate_form(None)
-        self.flash_status("Step removed.")
+        self.flash_status("Step removed.", level="info")
 
     def move_step(self, delta: int) -> None:
         if not self.ensure_profile_available():
@@ -770,7 +892,7 @@ class DesignerWindow(QMainWindow):
         profile.steps.insert(index + 1, clone)
         self.refresh_steps_list()
         self.steps_list.setCurrentRow(index + 1)
-        self.flash_status("Step cloned.")
+        self.flash_status("Step cloned.", level="info")
 
     def _update_step_buttons(self) -> None:
         if not self.profile_order:
@@ -800,7 +922,7 @@ class DesignerWindow(QMainWindow):
             if 0 <= row < len(profile.steps):
                 profile.steps[row].enabled = False
         self.refresh_steps_list()
-        self.flash_status("Selected steps disabled.")
+        self.flash_status("Selected steps disabled.", level="warning")
         self._update_step_buttons()
 
     def enable_selected_steps(self) -> None:
@@ -815,18 +937,51 @@ class DesignerWindow(QMainWindow):
             if 0 <= row < len(profile.steps):
                 profile.steps[row].enabled = True
         self.refresh_steps_list()
-        self.flash_status("Selected steps enabled.")
+        self.flash_status("Selected steps enabled.", level="success")
         self._update_step_buttons()
 
-    def flash_status(self, message: str, timeout: int = 2000) -> None:
+    def keyPressEvent(self, event) -> None:  # type: ignore[override]
+        if event.key() == Qt.Key_Delete:
+            self.remove_step()
+            return
+        if event.modifiers() & Qt.ControlModifier and event.key() in (Qt.Key_Up, Qt.Key_Down):
+            delta = -1 if event.key() == Qt.Key_Up else 1
+            self.move_step(delta)
+            return
+        super().keyPressEvent(event)
+
+    def flash_status(self, message: str, level: str = "info", timeout: int = 3000) -> None:
         self.hide_progress()
+        colors = {
+            "info": "#24b8c6",
+            "success": "#24b8c6",
+            "warning": "#f0a500",
+            "error": "#ff4f5a",
+        }
+        bg_colors = {
+            "info": "rgba(36, 184, 198, 0.15)",
+            "success": "rgba(36, 184, 198, 0.15)",
+            "warning": "rgba(240, 165, 0, 0.18)",
+            "error": "rgba(255, 79, 90, 0.18)",
+        }
+        color = colors.get(level, "#24b8c6")
+        bg = bg_colors.get(level, "rgba(36, 184, 198, 0.15)")
+        self.status_label.setStyleSheet(
+            f"color: {color}; font-style: italic; "
+            f"background-color: {bg}; border-radius: 4px; "
+            f"border: 1px solid {color}; padding: 2px 6px;"
+        )
         self.status_label.setText(message)
         if self._status_timer is None:
             self._status_timer = QTimer(self)
             self._status_timer.setSingleShot(True)
-            self._status_timer.timeout.connect(lambda: self.status_label.setText(""))
+            self._status_timer.timeout.connect(self._clear_status)
         self._status_timer.stop()
         self._status_timer.start(timeout)
+
+    def _clear_status(self) -> None:
+        self.status_label.setText("")
+        self.status_label.setStyleSheet("")
 
     def show_progress(self, message: str) -> None:
         if self._status_timer:
@@ -853,9 +1008,6 @@ class DesignerWindow(QMainWindow):
         self.current_file = None
         self.file_label.setText("No file loaded")
         self._update_step_buttons()
-        self.preview.clear()
-        self.current_file = None
-        self.file_label.setText("No file loaded")
 
     def load_existing_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -911,6 +1063,7 @@ class DesignerWindow(QMainWindow):
         idx = self.profile_order.index(key)
         self.profile_combo.setCurrentIndex(idx)
         self.switch_profile(idx)
+        self.flash_status(f"Profile '{label}' added.", level="success")
 
     def edit_profile(self) -> None:
         if not self.ensure_profile_available():
@@ -930,6 +1083,7 @@ class DesignerWindow(QMainWindow):
         profile.description = description
         profile.preflight = preflight
         self.refresh_profile_combo()
+        self.flash_status(f"Profile '{label}' updated.", level="success")
 
     def remove_profile(self) -> None:
         if not self.ensure_profile_available():
@@ -951,6 +1105,7 @@ class DesignerWindow(QMainWindow):
             self.steps_list.clear()
             self.populate_form(None)
             self._update_step_buttons()
+        self.flash_status(f"Profile '{profile.label}' removed.", level="warning")
 
     def _slugify(self, text_value: str) -> str:
         base = re.sub(r"[^a-z0-9]+", "-", text_value.lower()).strip("-")
@@ -998,26 +1153,22 @@ class DesignerWindow(QMainWindow):
         script = self.build_script()
         self.preview.setPlainText(script)
 
-    def save_as_new(self) -> None:
-        self.generate_script()
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save posti.py",
-            str(Path.home() / "posti.py"),
-            "Python files (*.py)",
-        )
-        if not path:
-            return
-        Path(path).write_text(self.preview.toPlainText(), encoding="utf-8")
-        self.flash_status(f"Script written to {path}")
-
     def save_over_existing(self) -> None:
-        if not self.current_file:
-            QMessageBox.information(self, "No file", "Load a posti.py first or use 'Save as new'.")
-            return
         self.generate_script()
+        if not self.current_file:
+            path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Save posti.py",
+                str(Path.home() / "posti.py"),
+                "Python files (*.py)",
+            )
+            if not path:
+                self.flash_status("Save cancelled.", level="info")
+                return
+            self.current_file = Path(path)
+            self.file_label.setText(f"Loaded: {path}")
         self.current_file.write_text(self.preview.toPlainText(), encoding="utf-8")
-        self.flash_status(f"Updated {self.current_file}")
+        self.flash_status(f"Updated {self.current_file}", level="success")
 
     def copy_preview(self) -> None:
         script = self.preview.toPlainText().strip()
@@ -1025,7 +1176,7 @@ class DesignerWindow(QMainWindow):
             QMessageBox.information(self, "No script", "Generate the script before copying.")
             return
         QApplication.clipboard().setText(script)
-        self.flash_status("Script copied to clipboard.")
+        self.flash_status("Script copied to clipboard.", level="info")
 
     def build_binary(self) -> None:
         pyinstaller = shutil.which("pyinstaller") or shutil.which(str(Path.home() / ".local/bin/pyinstaller"))
@@ -1084,6 +1235,333 @@ class DesignerWindow(QMainWindow):
 
 def main() -> None:
     app = QApplication(sys.argv)
+    dark_theme = """
+QWidget {
+    background-color: #1f2430;
+    color: #f4f4f7;
+    font-size: 12px;
+}
+
+QLabel#HeaderTitle {
+    font-size: 20px;
+    font-weight: 600;
+    color: #f4f4f7;
+}
+
+QLabel#HeaderSubtitle {
+    font-size: 12px;
+    color: #9ca0b3;
+}
+
+QLabel#SecondaryLabel {
+    color: #9ca0b3;
+    font-size: 11px;
+}
+
+QLabel#FileStatusLabel {
+    color: #f4f4f7;
+}
+
+QLabel#StatusLabel {
+    color: #9ca0b3;
+    font-style: italic;
+}
+
+QWidget#PanelCard {
+    background-color: #262b38;
+    border: 1px solid #343a4a;
+    border-radius: 6px;
+}
+
+QComboBox, QLineEdit, QTextEdit, QPlainTextEdit {
+    background-color: #262b38;
+    border: 1px solid #343a4a;
+    border-radius: 4px;
+    padding: 6px;
+    selection-background-color: #24b8c6;
+}
+
+QListWidget {
+    background-color: #262b38;
+    border: 1px solid #343a4a;
+    border-radius: 4px;
+}
+
+QListWidget::item {
+    padding: 6px 8px;
+    margin: 1px 0;
+}
+
+QListWidget::item:selected {
+    background-color: rgba(36, 184, 198, 0.3);
+    border-left: 3px solid #24b8c6;
+}
+
+QListWidget::item:hover:!selected {
+    background-color: #2d3240;
+}
+
+QPushButton {
+    background-color: #262b38;
+    border-radius: 4px;
+    border: 1px solid #343a4a;
+    padding: 6px 14px;
+}
+
+QPushButton:hover {
+    border-color: #24b8c6;
+}
+
+QPushButton:pressed {
+    background-color: #1b202c;
+}
+
+QPushButton:disabled {
+    color: #6c7083;
+    border-color: #2c3140;
+}
+
+QPushButton#PrimaryButton {
+    background-color: #24b8c6;
+    border-color: #24b8c6;
+    color: #1f2430;
+    font-weight: 500;
+}
+
+QPushButton#PrimaryButton:hover {
+    background-color: #2cd0df;
+}
+
+QPushButton#SecondaryButton {
+    background-color: transparent;
+    border-color: #343a4a;
+    color: #f4f4f7;
+}
+
+QPushButton#SecondaryButton:hover {
+    background-color: #262b38;
+}
+
+QPlainTextEdit#PreviewEditor {
+    background-color: #181c24;
+    border: 1px solid #343a4a;
+    border-radius: 4px;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 12px;
+}
+QMenuBar {
+    background-color: #1f2430;
+    color: #f4f4f7;
+}
+
+QMenuBar::item {
+    background: transparent;
+    padding: 4px 10px;
+}
+
+QMenuBar::item:selected {
+    background: #262b38;
+}
+
+QMenu {
+    background-color: #262b38;
+    border: 1px solid #343a4a;
+}
+
+QMenu::item {
+    padding: 4px 20px 4px 24px;
+}
+
+QMenu::item:selected {
+    background-color: #24b8c6;
+    color: #1f2430;
+}
+
+QMenu::separator {
+    height: 1px;
+    background: #343a4a;
+}
+
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 22px;
+    border-left: 1px solid #343a4a;
+    background-color: #1f2430;
+}
+
+QComboBox::down-arrow {
+    width: 8px;
+    height: 8px;
+}
+
+"""
+
+    light_theme = """
+QWidget {
+    background-color: #f4f5f9;
+    color: #22242f;
+    font-size: 12px;
+}
+
+QLabel#HeaderTitle {
+    font-size: 20px;
+    font-weight: 600;
+    color: #22242f;
+}
+
+QLabel#HeaderSubtitle {
+    font-size: 12px;
+    color: #7a7f90;
+}
+
+QLabel#SecondaryLabel {
+    color: #7a7f90;
+    font-size: 11px;
+}
+
+QLabel#FileStatusLabel {
+    color: #22242f;
+}
+
+QLabel#StatusLabel {
+    color: #7a7f90;
+    font-style: italic;
+}
+
+QWidget#PanelCard {
+    background-color: #ffffff;
+    border: 1px solid #dde0ea;
+    border-radius: 6px;
+}
+
+QComboBox, QLineEdit, QTextEdit, QPlainTextEdit {
+    background-color: #ffffff;
+    border: 1px solid #dde0ea;
+    border-radius: 4px;
+    padding: 6px;
+    selection-background-color: #24b8c6;
+}
+
+QListWidget {
+    background-color: #ffffff;
+    border: 1px solid #dde0ea;
+    border-radius: 4px;
+}
+
+QListWidget::item {
+    padding: 6px 8px;
+    margin: 1px 0;
+}
+
+QListWidget::item:selected {
+    background-color: rgba(36, 184, 198, 0.15);
+    border-left: 3px solid #24b8c6;
+    color: #22242f;
+}
+
+QListWidget::item:hover:!selected {
+    background-color: #f0f2f7;
+}
+
+QPushButton {
+    background-color: #ffffff;
+    border-radius: 4px;
+    border: 1px solid #dde0ea;
+    padding: 6px 14px;
+}
+
+QPushButton:hover {
+    border-color: #24b8c6;
+}
+
+QPushButton:pressed {
+    background-color: #e4e7f2;
+}
+
+QPushButton:disabled {
+    color: #b0b4c2;
+    border-color: #e0e3ee;
+}
+
+QPushButton#PrimaryButton {
+    background-color: #24b8c6;
+    border-color: #24b8c6;
+    color: #ffffff;
+    font-weight: 500;
+}
+
+QPushButton#PrimaryButton:hover {
+    background-color: #2cd0df;
+}
+
+QPushButton#SecondaryButton {
+    background-color: transparent;
+    border-color: #dde0ea;
+    color: #22242f;
+}
+
+QPushButton#SecondaryButton:hover {
+    background-color: #f0f2f7;
+}
+
+QPlainTextEdit#PreviewEditor {
+    background-color: #f0f2f7;
+    border: 1px solid #dde0ea;
+    border-radius: 4px;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 12px;
+}
+QMenuBar {
+    background-color: #f4f5f9;
+    color: #22242f;
+}
+
+QMenuBar::item {
+    background: transparent;
+    padding: 4px 10px;
+}
+
+QMenuBar::item:selected {
+    background: #e4e7f2;
+}
+
+QMenu {
+    background-color: #ffffff;
+    border: 1px solid #dde0ea;
+}
+
+QMenu::item {
+    padding: 4px 20px 4px 24px;
+}
+
+QMenu::item:selected {
+    background-color: rgba(36, 184, 198, 0.15);
+    color: #22242f;
+}
+
+QMenu::separator {
+    height: 1px;
+    background: #dde0ea;
+}
+
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 22px;
+    border-left: 1px solid #dde0ea;
+    background-color: #f4f5f9;
+}
+
+QComboBox::down-arrow {
+    width: 8px;
+    height: 8px;
+}
+
+"""
+    app.setProperty("darkTheme", dark_theme)
+    app.setProperty("lightTheme", light_theme)
+    app.setStyleSheet(dark_theme)
     try:
         window = DesignerWindow()
         window.show()
