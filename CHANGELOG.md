@@ -1,7 +1,8 @@
 # POSTI Forge – Changelog
 
-## 1.1 – 2025-12-03
+## 1.0 – 2025-12-03
 
+- First upload to Github repo
 - Redesigned main UI layout (split view, clearer sections for profiles, steps and preview).
 - Added drag-and-drop reordering of steps and keyboard shortcuts (Delete, Ctrl+↑/↓).
 - Introduced dark/light themes with a toggle and consistent styling for menus and controls.
