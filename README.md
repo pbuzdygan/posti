@@ -29,10 +29,11 @@ This repository contains a full web‑based designer and a backend builder wrapp
   - Multiple profiles with custom labels.
   - Inline Add/Edit/Remove actions and safe delete confirmation.
 - **Step composer**
+  - Create sub-steps command chain by `&&`
   - Title, description, command, optional “Require confirmation” toggle.
   - Multi‑selection of steps with Ctrl/Shift and bulk enable/disable actions.
   - Clone, reorder via controls and enable/disable per step.
-- **posti.py preview**
+- **Posti script preview**
   - Live preview of the generated runner with Python syntax highlighting.
   - “Generate preview” and “Copy to clipboard” actions.
 - **Project persistence**
@@ -45,35 +46,22 @@ This repository contains a full web‑based designer and a backend builder wrapp
   - Installable as a Progressive Web App with a manifest, icons and a service worker for offline shell.
 
 ---
-## Requirements
 
-- Docker Engine and Docker Compose.
-- Access to the internet at build time (to install npm packages and Python dependencies).
-- A writable directory on the host to persist data, bind‑mounted as `./data`.
+## Run with Docker (GHCR)
 
----
-
-## Using a prebuilt image from GHCR
-
-If you publish images to GitHub Container Registry (GHCR) using the provided workflow, they will be available under:
-
-- `ghcr.io/<OWNER>/<REPO>:latest` – latest build from `main`.
-- `ghcr.io/<OWNER>/<REPO>:<tag>` – images built from GitHub releases.
-
-Example `docker-compose.yml` snippet using a prebuilt image instead of building locally:
+The easiest way to get started is to use compose file:
 
 ```yaml
 services:
   posti:
-    image: ghcr.io/<OWNER>/<REPO>:latest
+    image: ghcr.io/pbuzdygan/posti:latest
     container_name: posti
+    restart: unless-stopped
     ports:
       - "8012:8000"
     volumes:
       - ./data:/app/data
 ```
-
-Replace `<OWNER>/<REPO>` with your GitHub namespace and repository name (e.g. `myorg/posti-forge`).
 
 ---
 
