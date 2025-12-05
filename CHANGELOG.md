@@ -1,5 +1,11 @@
 # POSTI Forge – Changelog
 
+## 2.0.1 – 2025-12-05
+
+- Fixed the CLI banner in generated `posti.py` scripts by forcing a raw string literal to avoid Python escape warnings.
+- Changed the default dry-run prompt to “No”, so hitting Enter now runs the selected profile immediately unless `--dry-run` is supplied.
+- Added backend normalization to apply both fixes automatically when saving projects or building binaries, covering older frontend bundles without requiring a rebuild.
+
 ## 2.0 – 2025-12-05
 
 - Rebuilt POSTI as a containerised web app: React/Vite frontend served by a FastAPI backend in a single Docker service.
