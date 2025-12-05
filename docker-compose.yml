@@ -1,0 +1,11 @@
+version: "3.9"
+
+services:
+  posti:
+    build:
+      context: .
+    container_name: posti
+    ports:
+      - "8012:8000"
+    volumes:
+      - ./data:/app/data

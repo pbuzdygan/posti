@@ -1,78 +1,175 @@
-# POSTI
+# Posti Forge
 
-POSTI is a “post-install interactive orchestrator” that lets you script complete bring-up flows for fresh Linux systems. You design per-profile step sequences in a GUI and export a runnable CLI (`posti.py` or a PyInstaller-built binary) that guides operators through the exact commands needed after installing an OS.
+Posti Forge is a profile‑aware, post‑install automation designer. It lets you:
 
-## What you can do with POSTI
+- Define **profiles** for different targets (e.g. Fedora, Ubuntu, kiosks).
+- Compose ordered **steps** (commands with optional descriptions and confirmation gates).
+- Preview the generated **`posti.py`** runner script with a CRT‑style console UI.
+- Save your work as versioned Python scripts and build standalone binaries.
 
-- Model multiple targets (Fedora Desktop, Ubuntu server, Raspbian, etc.) in one project.
-- Add pre-flight checklists plus rich descriptions so operators know the context before running commands.
-- Compose step lists where every row has a title, optional confirmation gate, arbitrary shell command and enable/disable flags.
-- Load an existing `posti.py`, tweak steps, and overwrite it without rebuilding everything manually.
-- Preview or export a ready-to-run CLI script, or bake it into a standalone binary for “double click and run” deployments.
-- Run generated scripts interactively, non-interactively (`--profile`, `--yes`), or in dry-run mode to audit commands.
+This repository contains a full web‑based designer and a backend builder wrapped in a single container.
 
-## Requirements & setup
+---
 
-### Designer (posti_designer.py)
+## Features
 
-- Python 3.9 or newer.
-- Install [PySide6](https://pypi.org/project/PySide6/) for the Qt GUI: `python3 -m pip install PySide6`.
-- (Optional) Install [PyInstaller](https://pyinstaller.org/) if you plan to build standalone binaries: `python3 -m pip install pyinstaller`.
+- **Profile management**
+  - Multiple profiles with custom labels.
+  - Inline Add/Edit/Remove actions and safe delete confirmation.
+- **Step composer**
+  - Title, description, command, optional “Require confirmation” toggle.
+  - Multi‑selection of steps with Ctrl/Shift and bulk enable/disable actions.
+  - Clone, reorder via controls and enable/disable per step.
+- **posti.py preview**
+  - Live preview of the generated runner with Python syntax highlighting.
+  - “Generate preview” and “Copy to clipboard” actions.
+- **Project persistence**
+  - “Save project” produces versioned files like `posti_v1.2.py`.
+  - Scripts are saved on the server under `data/projects` and downloaded to your browser.
+- **Binary builds**
+  - One‑click “Build Binary” invokes PyInstaller in the backend.
+  - Versioned binaries are stored under `data/generated_binary` and downloaded to the browser.
+- **PWA support**
+  - Installable as a Progressive Web App with a manifest, icons and a service worker for offline shell.
 
-Launch the designer from a terminal (or double-click it on desktop environments that associate `.py` with Python 3):
+---
 
-```bash
-python3 posti_designer.py
+## Architecture
+
+- **Frontend**
+  - React + Vite SPA under `frontend/`.
+  - Built assets are served as static files by the backend container.
+- **Backend**
+  - FastAPI app in `builder_service/main.py` (copied as `/app/main.py` in the image).
+  - Endpoints:
+    - `POST /api/save-script` – save a versioned `posti.py` under `data/projects` and stream it back.
+    - `POST /api/build-binary` – run PyInstaller and stream the binary from `data/generated_binary`.
+  - Also serves the built frontend at `/`.
+- **Container**
+  - Single service defined in `docker-compose.yml` (`posti`).
+  - Static UI and API served from the same container on port `8000` (mapped to host `8012` by default).
+
+---
+
+## Requirements
+
+- Docker Engine and Docker Compose.
+- Access to the internet at build time (to install npm packages and Python dependencies).
+- A writable directory on the host to persist data, bind‑mounted as `./data`.
+
+---
+
+## Using a prebuilt image from GHCR
+
+If you publish images to GitHub Container Registry (GHCR) using the provided workflow, they will be available under:
+
+- `ghcr.io/<OWNER>/<REPO>:latest` – latest build from `main`.
+- `ghcr.io/<OWNER>/<REPO>:<tag>` – images built from GitHub releases.
+
+Example `docker-compose.yml` snippet using a prebuilt image instead of building locally:
+
+```yaml
+services:
+  posti:
+    image: ghcr.io/<OWNER>/<REPO>:latest
+    container_name: posti
+    ports:
+      - "8012:8000"
+    volumes:
+      - ./data:/app/data
 ```
 
-### Generated runner (posti.py)
+Replace `<OWNER>/<REPO>` with your GitHub namespace and repository name (e.g. `myorg/posti-forge`).
 
-- Python 3.8+ on the target machine (`sudo apt install python3`, `sudo dnf install python3`, etc.).
-- Optional but recommended: `colorama` for ANSI colors (`python3 -m pip install colorama`).
-- Shell utilities referenced in your step commands (e.g., `apt`, `dnf`, `git`, `ansible`) must already be installed.
+---
 
-Run it locally or on a remote server:
+## Quick start (Docker Compose)
 
-```bash
-python3 posti.py                # interactive profile selector
-python3 posti.py --dry-run      # print commands only
-python3 posti.py --profile fedora-cli --yes   # auto-run a known profile
-```
-
-On desktop systems you can mark the file as executable (`chmod +x posti.py`) and double-click it, but it still relies on the system Python runtime and the dependencies listed above.
-
-### Standalone binary (posti_cli)
-
-- Requires PyInstaller at build time (see Designer requirements).
-- The resulting executable embeds Python, so the target machine does **not** need Python, PySide, or colorama—only the commands you call in your steps.
-- Build directly from the designer (“Build standalone binary”) or via CLI:
+From the project root:
 
 ```bash
-python3 posti_designer.py   # generate posti.py
-python3 -m pip install pyinstaller
-pyinstaller --onefile --name posti_cli posti.py
+docker compose build
+docker compose up -d
 ```
 
-Copy `dist/posti_cli` (or `posti_cli.exe` on Windows) to the server and run it like any other binary: `./posti_cli`.
+Then open the UI in your browser:
 
-### .py vs. binary – when to use what?
+- http://localhost:8012/ (or the host/port you configured)
 
-| Aspect | `posti.py` | `posti_cli` binary |
-| --- | --- | --- |
-| Runtime dependencies | Needs Python 3.8+, optional `colorama`, plus whatever commands your steps reference | Self-contained – no Python packages required on the target |
-| Portability | Same script runs on every platform with Python installed | Binary is OS/architecture-specific; rebuild per target |
-| Transparency | Easy to inspect/edit with a text editor | Harder to audit (compiled); mainly for operators who just double-click |
-| Size | Small text file | Tens of MB due to embedded interpreter |
+The default `docker-compose.yml` maps:
 
-Pick the `.py` script when you want full transparency and already have Python on the machine; pick the binary when you need a turnkey executable for ops teams without Python preinstalled.
+- `./data` on the host → `/app/data` inside the container.
 
-## Running POSTI on a server
+This folder is used for persistence (see below).
 
-1. Export `posti.py` (or `posti_cli`) from the designer.
-2. Copy it to the server via `scp`, `rsync`, etc.
-3. For `.py`: make sure Python and any command-line tools used in the steps are installed, then run `python3 posti.py`.
-4. For the binary: mark it executable (`chmod +x posti_cli`) and launch `./posti_cli` directly—even on minimal images without Python.
+---
 
-## License
+## Data persistence layout
 
-See [LICENSE](LICENSE) for details.
+Under the bind‑mounted `data/` directory the backend expects:
+
+- `data/projects` – versioned `posti_vX.Y.py` project files (from **Save project**).
+- `data/generated_binary` – built binaries (from **Build Binary**).
+
+You can create these subfolders yourself on the host, or let the backend attempt to create them. At startup, the backend logs a clear status for each area:
+
+- if the directory is missing or not writable, it logs a warning but the app still runs;
+- in that case, **downloads to the browser still work**, but nothing can be persisted to disk on the server.
+
+Binary artifacts and saved scripts are marked executable (0755) where the filesystem/ACLs allow it.
+
+---
+
+## Using the designer
+
+1. **Create a profile**
+   - In the **Profiles** panel, click **Add**, name your profile and confirm.
+   - The “Add” button pulses when no profiles exist to guide new users.
+2. **Compose steps**
+   - Use the **Step composer** to add steps with a title, description and command.
+   - Toggle **Confirm** if a step should require confirmation at runtime.
+3. **Preview posti.py**
+   - In the **posti.py preview** panel, click **Generate preview**.
+   - Review the script; use **Copy to clipboard** if you want to paste it elsewhere.
+4. **Save project**
+   - Click **Save project** in the **Operations** panel.
+   - The app bumps the version (e.g. `1.0 → 1.1`), saves `posti_vX.Y.py` to `data/projects` (if possible) and downloads it to your browser.
+5. **Build binary**
+   - Click **Build Binary** to create a standalone executable from the current configuration.
+   - The binary is stored in `data/generated_binary` and downloaded to your browser.
+
+---
+
+## PWA installation
+
+Posti Forge is installable as a PWA:
+
+- When conditions are met (served over HTTPS, supported browser), the app will show an **Install** banner.
+- Alternatively, you can use your browser’s menu:
+  - Desktop Chromium: “Install app…”
+  - Android: “Add to Home screen”
+
+Once installed, you get:
+
+- Fullscreen, app‑like experience.
+- Offline shell for the designer and `posti.py` preview (within the limits of cached resources).
+
+---
+
+## Development notes
+
+For local development of the frontend only (outside the container):
+
+1. Install Node.js (LTS) and pnpm/npm.
+2. In `frontend/`:
+
+   ```bash
+   npm install
+   npm run dev
+   ```
+
+   This starts Vite dev server (default http://localhost:5173/).
+
+3. Ensure the backend (FastAPI + PyInstaller service) is reachable from the dev server, or set `VITE_BUILDER_URL` to point to the running API (e.g. `http://localhost:8000/api`).
+
+For most users, running via `docker compose` as described above is sufficient.
