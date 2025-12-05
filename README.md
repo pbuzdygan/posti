@@ -1,15 +1,27 @@
 # Posti Forge
 
-Posti Forge is a profile‑aware, post‑install automation designer. It lets you:
+<p align="center">
+  <img src="branding/posti_banner.png" alt="POSTI Banner" width="25%">
+</p>
 
-- Define **profiles** for different targets (e.g. Fedora, Ubuntu, kiosks).
-- Compose ordered **steps** (commands with optional descriptions and confirmation gates).
-- Preview the generated **`posti.py`** runner script with a CRT‑style console UI.
-- Save your work as versioned Python scripts and build standalone binaries.
+**Posti Forge** is a post‑install automation designer. It lets you:
+
+- ✅ Define **profiles** for different targets (e.g. Fedora, Ubuntu, kiosks, Windows etc).
+- ✅ Compose ordered **steps** (commands with optional descriptions and confirmation gates).
+- ✅ Preview the generated **`posti.py`** runner script with a CRT‑style console UI.
+- ✅ Save your work as versioned Python scripts and build standalone binaries.
 
 This repository contains a full web‑based designer and a backend builder wrapped in a single container.
 
 ---
+## Demo / Screenshots
+
+### Main UI
+<p align="center">
+  <img src="branding/0_dark.png" width="45%" alt="Main UI Posti Dark">
+  <img src="branding/0_light.png" width="45%" alt="Main UI Posti Light">
+</p>
+
 
 ## Features
 
@@ -33,24 +45,6 @@ This repository contains a full web‑based designer and a backend builder wrapp
   - Installable as a Progressive Web App with a manifest, icons and a service worker for offline shell.
 
 ---
-
-## Architecture
-
-- **Frontend**
-  - React + Vite SPA under `frontend/`.
-  - Built assets are served as static files by the backend container.
-- **Backend**
-  - FastAPI app in `builder_service/main.py` (copied as `/app/main.py` in the image).
-  - Endpoints:
-    - `POST /api/save-script` – save a versioned `posti.py` under `data/projects` and stream it back.
-    - `POST /api/build-binary` – run PyInstaller and stream the binary from `data/generated_binary`.
-  - Also serves the built frontend at `/`.
-- **Container**
-  - Single service defined in `docker-compose.yml` (`posti`).
-  - Static UI and API served from the same container on port `8000` (mapped to host `8012` by default).
-
----
-
 ## Requirements
 
 - Docker Engine and Docker Compose.
