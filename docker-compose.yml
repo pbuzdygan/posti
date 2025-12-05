@@ -2,9 +2,9 @@ version: "3.9"
 
 services:
   posti:
-    build:
-      context: .
+    image: ghcr.io/pbuzdygan/posti:latest
     container_name: posti
+    restart: unless-stopped
     ports:
       - "8012:8000"
     volumes:
