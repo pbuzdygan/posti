@@ -73,6 +73,17 @@ def _cleanup(path: Path) -> None:
         shutil.rmtree(path, ignore_errors=True)
 
 
+def _normalize_script(script: str) -> str:
+    """Apply backend-side patches to generated scripts."""
+    if 'art = """' in script and 'art = r"""' not in script:
+        script = script.replace('art = """', 'art = r"""', 1)
+    script = script.replace(
+        'prompt_bool("Enable dry-run mode?", default=True)',
+        'prompt_bool("Enable dry-run mode?", default=False)',
+    )
+    return script
+
+
 def _check_data_dir(label: str, path: Path) -> None:
     """Log clear warnings if persistence directories are missing or not writable.
 
@@ -124,7 +135,7 @@ async def healthcheck() -> dict[str, str]:
 
 @app.post("/api/build-binary")
 async def build_binary(payload: BuildRequest):
-    script = payload.script.strip()
+    script = _normalize_script(payload.script.strip())
     if not script:
         raise HTTPException(status_code=400, detail="Script content is empty.")
 
@@ -183,7 +194,7 @@ async def build_binary(payload: BuildRequest):
 
 @app.post("/api/save-script")
 async def save_script(payload: ScriptSaveRequest):
-    script = payload.script.strip()
+    script = _normalize_script(payload.script.strip())
     if not script:
         raise HTTPException(status_code=400, detail="Script content is empty.")
     version = payload.version.strip() or "1.0"

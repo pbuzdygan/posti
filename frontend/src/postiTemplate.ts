@@ -69,7 +69,7 @@ def prompt_bool(message: str, default: bool = True) -> bool:
 
 
 def hacker_banner() -> None:
-    art = """
+    art = r"""
  ____    ___    ____   _____   ___ 
 |  _ \  / _ \  / ___| |_   _| |_ _|
 | |_) || | | | \___ \   | |    | | 
@@ -259,7 +259,7 @@ def main() -> None:
     profile = data[profile_key]
     print(colorize(f"\nLoaded profile: {profile['label']}", GREEN))
     display_preflight(profile)
-    dry_run = args.dry_run or prompt_bool("Enable dry-run mode?", default=True)
+    dry_run = args.dry_run or prompt_bool("Enable dry-run mode?", default=False)
     ctx = ExecutionContext(dry_run=dry_run)
     run_steps(profile, ctx, auto_confirm=args.yes)
     print(colorize("\nAll done. Consider launching zsh manually when ready.", GREEN))
