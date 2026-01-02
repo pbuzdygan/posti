@@ -1,7 +1,7 @@
 ---
 name: Bug report
 about: Create a report to help us improve
-title: 'BUG: '
+title: "\U0001F41EBUG: "
 labels: bug
 assignees: pbuzdygan
 
