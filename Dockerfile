@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.5
 
-FROM node:24-alpine AS frontend
+FROM node:26-alpine AS frontend
 WORKDIR /web
 COPY frontend/package*.json ./
 RUN npm ci
