@@ -4,6 +4,7 @@
 
 ### Bug Fixes
 
+- Saving a project no longer creates a growing collection of version-numbered files.
 - Files saved in bind-mounted folders now belong to the UID and GID selected by
   the administrator instead of unexpectedly being owned by root.
 - Requests can no longer use crafted paths to read files outside the public web
@@ -15,6 +16,10 @@
 
 ### Improvements
 
+- Posti now opens behind a full-screen numeric PIN login, keeping both the designer
+  and its project/build API unavailable until the user signs in.
+- Each project now has one clear current file, while the previous ten saves are
+  retained automatically for recovery without cluttering the project list.
 - Posti now runs without root privileges and starts with a more restricted
   container environment, reducing the impact of an application failure or attack.
 - The service listens on localhost by default, making accidental exposure to the
@@ -40,14 +45,15 @@
 
 ### New Features
 
+- **Undo last save** restores earlier project states, one save at a time, for up
+  to the ten most recent changes.
 - A project-name field above **Active profile** now creates the initial project
   file immediately and carries its name into readable scripts and binaries.
 - **Load project** now presents the projects available on the server, including
   files saved by earlier Posti releases.
 - Administrators can choose the owner of generated files with `POSTI_UID` and
   `POSTI_GID`, including deployments backed by NAS shares and bind mounts.
-- Saving projects and building binaries now require a private API token. The UI
-  asks for it when needed and keeps it only for the current browser session.
+- Access to Posti now requires the numeric application PIN configured by the administrator.
 - Administrators can configure script-size, build-time, queue-wait, temporary-file
   retention, and permitted cross-origin access limits for their environment.
 

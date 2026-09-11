@@ -4,6 +4,7 @@ import test from "node:test";
 import { extractProjectName, normalizeProjectName } from "./projectNames.ts";
 
 test("extracts a project name from current and legacy filenames", () => {
+  assert.equal(extractProjectName("workstation_posti.py"), "workstation");
   assert.equal(extractProjectName("workstation_posti_2.1.py"), "workstation");
   assert.equal(extractProjectName("legacy_v1.0.py"), "legacy");
 });

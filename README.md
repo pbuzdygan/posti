@@ -9,7 +9,7 @@
 - ✅ Define **profiles** for different targets (e.g. Fedora, Ubuntu, kiosks, Windows etc).
 - ✅ Compose ordered **steps** (commands with optional descriptions and confirmation gates).
 - ✅ Preview the generated **`posti.py`** runner script with a CRT‑style console UI.
-- ✅ Save your work as versioned Python scripts and build standalone binaries.
+- ✅ Save each project in one canonical Python file with a ten-save undo history.
 
 This repository contains a full web‑based designer and a backend builder wrapped in a single container.
 
@@ -38,8 +38,8 @@ This repository contains a full web‑based designer and a backend builder wrapp
   - “Generate preview” and “Copy to clipboard” actions.
 - **Project persistence**
   - The Profiles panel stays locked until a named project is created or loaded.
-  - Confirming a new project name immediately creates its version `1.0` file.
-  - “Save project” produces versioned files like `workstation_posti_1.2.py`.
+  - Confirming a new project name immediately creates `workstation_posti.py`.
+  - “Save project” updates that file and retains the previous ten saved states.
   - “Load project” lists the scripts stored under `data/projects`; no local file picker is used.
 - **Binary builds**
   - One‑click “Build Binary” invokes PyInstaller in the backend.
@@ -51,15 +51,15 @@ This repository contains a full web‑based designer and a backend builder wrapp
 
 ## Run with Docker (GHCR)
 
-Posti 2.1 runs as a non-root user and requires an API token for operations that
-write projects or build binaries. Start by preparing the configuration and data
+Posti 2.1 runs as a non-root user and requires a numeric application PIN with at
+least four digits. Start by preparing the configuration and data
 directories:
 
 ```bash
 cp .env.example .env
 sed -i "s/^POSTI_UID=.*/POSTI_UID=$(id -u)/" .env
 sed -i "s/^POSTI_GID=.*/POSTI_GID=$(id -g)/" .env
-# Replace POSTI_API_TOKEN in .env with a random value of at least 32 characters.
+# Replace POSTI_APP_PIN in .env with your numeric PIN (at least four digits).
 mkdir -p data/projects data/generated_binary
 sudo chown -R "$(id -u):$(id -g)" data
 ```
@@ -75,7 +75,7 @@ services:
     user: "${POSTI_UID:-1000}:${POSTI_GID:-1000}"
     environment:
       HOME: /tmp
-      POSTI_API_TOKEN: "${POSTI_API_TOKEN:?Set POSTI_API_TOKEN in .env}"
+      POSTI_APP_PIN: "${POSTI_APP_PIN:?Set POSTI_APP_PIN in .env}"
     ports:
       - "127.0.0.1:${POSTI_PORT:-8012}:8000"
     volumes:
@@ -110,8 +110,8 @@ The default `docker-compose.yml` maps:
 
 This folder is used for persistence (see below).
 
-On the first **Save project** or **Build Binary** operation, the browser asks for
-the API token from `.env`. The token is retained only in browser `sessionStorage`.
+The application starts on a full-screen PIN login. A successful login creates an
+HTTP-only browser session; the designer and protected API remain unavailable before login.
 
 The port is deliberately bound to localhost. If Posti must be reachable from
 another machine, put it behind an authenticated HTTPS reverse proxy or a VPN;
@@ -124,7 +124,8 @@ do not publish the builder directly to an untrusted network.
 Under the bind‑mounted `data/` directory the backend expects:
 
 - `data/projects` – the project library and source of truth used by **Save project**
-  and **Load project**, with names such as `workstation_posti_X.Y.py`.
+  and **Load project**, with names such as `workstation_posti.py`. The hidden
+  `.history` subdirectory retains at most ten previous saves per project.
 - `data/generated_binary` – built binaries (from **Build Binary**).
 
 Create these subfolders on the host before first start and make them writable by
@@ -148,6 +149,9 @@ options or ACLs. Align `uid`, `gid`, `file_mode`, and `dir_mode` with `.env`.
 
 ### Security and resource settings
 
+- `POSTI_APP_PIN` — required numeric PIN containing at least four digits.
+- `POSTI_SESSION_TTL_SECONDS` — login lifetime; default 12 hours.
+- `POSTI_COOKIE_SECURE` — set to `true` when Posti is available over HTTPS.
 - `POSTI_MAX_SCRIPT_BYTES` — maximum script size; default 1 MiB.
 - `POSTI_BUILD_TIMEOUT_SECONDS` — PyInstaller timeout; default 180 seconds.
 - `POSTI_BUILD_QUEUE_TIMEOUT_SECONDS` — second build wait time; default 2 seconds.
@@ -156,6 +160,9 @@ options or ACLs. Align `uid`, `gid`, `file_mode`, and `dir_mode` with `.env`.
 
 Only one binary build is admitted at a time. Compose also limits Posti to 2 CPUs,
 2 GiB of RAM and 256 processes; these values can be adjusted for larger builds.
+Because a short numeric PIN has limited entropy, expose Posti only through HTTPS
+and a trusted LAN, VPN, or authenticated reverse proxy. Five failed attempts from
+one client temporarily block further login attempts.
 
 ---
 
@@ -163,7 +170,7 @@ Only one binary build is admitted at a time. Compose also limits Posti to 2 CPUs
 
 1. **Create or load a project**
    - Enter a name above **Active profile** and click **Create project**. Posti immediately
-     creates `project-name_posti_1.0.py`; unsafe filename characters are replaced automatically.
+     creates `project-name_posti.py`; unsafe filename characters are replaced automatically.
    - **New project** clears the current workspace and returns to this naming step.
    - Alternatively, click **Load project** and choose a saved script from `data/projects`.
    - Older `posti_vX.Y.py` scripts already present in that directory remain loadable.
@@ -179,12 +186,12 @@ Only one binary build is admitted at a time. Compose also limits Posti to 2 CPUs
    - Review the script; use **Copy to clipboard** if you want to paste it elsewhere.
 5. **Save project**
    - Click **Save project** in the **Operations** panel.
-   - The app bumps the version (e.g. `1.0 → 1.1`) and saves
-     `project-name_posti_X.Y.py` to `data/projects`.
+   - The app updates `project-name_posti.py` and retains up to ten earlier saves.
+   - Use **Undo last save** to restore those states one at a time.
    - The server copy is the source of truth and is opened later through **Load project**.
 6. **Build binary**
    - Click **Build Binary** to create a standalone executable from the current configuration.
-   - The `project-name_posti_X.Y` binary is stored in `data/generated_binary` and downloaded to your browser.
+   - The `project-name_posti` binary is stored in `data/generated_binary` and downloaded to your browser.
 
 ---
 

@@ -54,6 +54,48 @@ body.theme-light {
   box-sizing: border-box;
 }
 
+.pin-gate {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.pin-card {
+  width: min(390px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 2rem;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--panel-bg);
+  box-shadow: 0 25px 70px rgba(0, 0, 0, 0.45);
+  text-align: center;
+}
+
+.pin-card img {
+  width: 128px;
+  margin: 0 auto;
+}
+
+.pin-card h1,
+.pin-card p {
+  margin: 0;
+}
+
+.pin-card input {
+  text-align: center;
+  font-size: 1.4rem;
+  letter-spacing: 0.4rem;
+}
+
+.pin-card .error {
+  color: var(--error);
+}
+
 body {
   margin: 0;
   min-height: 100vh;

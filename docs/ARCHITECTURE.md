@@ -11,13 +11,13 @@ Posti Forge is a full-stack web application packaged as a single Docker image. T
 - A **React + Vite** single-page application (SPA) that provides the designer UI.
 - A **FastAPI** backend that:
   - Serves the built frontend assets.
-  - Persists named projects (`project-name_posti_X.Y.py`) and compiled binaries.
+  - Persists named projects (`project-name_posti.py`), their limited history, and compiled binaries.
   - Exposes REST endpoints used by the frontend to list, load, save and build.
   - Provides a health check endpoint (`/api/healthz`).
 
 Persistent data is stored outside the container in a bind-mounted `data/` directory:
 
-- `data/projects` – Server-side project library used by “Save project” and “Load project”.
+- `data/projects` – Server-side project library; `.history` retains up to ten earlier saves per project.
 - `data/generated_binary` – PyInstaller binaries produced via “Build Binary”.
 
 ---
@@ -82,13 +82,15 @@ Persistent data is stored outside the container in a bind-mounted `data/` direct
   - Returns the project files available in the server-side library.
 - `GET /api/projects/{filename}`
   - Returns the selected project after validating that its path remains inside the library.
+- `POST /api/projects/{filename}/undo`
+  - Restores and consumes the newest retained save for the selected project.
 - `POST /api/build-binary`
   - Body: `{ script: string, version?: string, filename?: string }`.
   - Runs PyInstaller and streams the resulting binary.
 - `GET /api/healthz`
   - Used for monitoring / readiness if needed.
 
-Internally the frontend uses helper functions for versioning (e.g. bumping `1.3 → 1.4`), file-name sanitisation, and step/profile serialization.
+Internally the frontend uses helpers for file-name sanitisation and step/profile serialization.
 
 ---
 
@@ -97,7 +99,8 @@ Internally the frontend uses helper functions for versioning (e.g. bumping `1.3 
 ### Runtime
 
 - **FastAPI** application served by **uvicorn**.
-- Write/build endpoints authenticate the `X-Posti-Token` header against `POSTI_API_TOKEN`.
+- A successful `POSTI_APP_PIN` login creates a random, expiring HTTP-only session cookie.
+- Protected project and build endpoints reject requests without that session.
 - Single module `builder_service/main.py` (copied as `main.py` in the container).
 - Python dependencies listed in `builder_service/requirements.txt` (FastAPI, Uvicorn, PyInstaller).
 
@@ -110,14 +113,14 @@ Internally the frontend uses helper functions for versioning (e.g. bumping `1.3 
 2. **API endpoints**
    - `GET /api/healthz` – returns `{ "status": "ok" }`.
    - `POST /api/save-script`
-     - Requires `X-Posti-Token`, validates the input and writes atomically to
+     - Requires a PIN-authenticated session, validates the input and writes atomically to
        `PROJECT_ROOT` (`/app/data/projects`).
      - Sets executable mode (`0755`).
      - Returns the saved file as a streamed response with headers describing the filename and relative path.
    - `GET /api/projects` and `GET /api/projects/{filename}`
-     - Require `X-Posti-Token` and provide the list and contents used by the project library dialog.
+     - Require a PIN-authenticated session and provide the project library list and contents.
    - `POST /api/build-binary`
-     - Requires `X-Posti-Token`.
+     - Requires a PIN-authenticated session.
      - Creates a temporary build directory under `BINARY_ROOT`.
      - Runs one PyInstaller job at a time in a worker thread with a timeout.
      - Atomically persists the binary, streams an isolated copy, and removes stale temporary builds.
@@ -171,7 +174,7 @@ services:
     user: "${POSTI_UID:-1000}:${POSTI_GID:-1000}"
     environment:
       HOME: /tmp
-      POSTI_API_TOKEN: "${POSTI_API_TOKEN:?Set POSTI_API_TOKEN in .env}"
+      POSTI_APP_PIN: "${POSTI_APP_PIN:?Set POSTI_APP_PIN in .env}"
     ports:
       - "127.0.0.1:8012:8000"
     volumes:
@@ -219,19 +222,19 @@ ancestry before logging in to GHCR and running the Docker build and pushes.
 ## Data flow summary
 
 1. **Create or load project**:
-   - Confirming the inline project name persists an empty version `1.0` script.
+   - Confirming the inline project name persists the initial canonical project script.
    - Profile editing remains locked until that save succeeds or a library file is loaded.
 2. **User interacts with SPA**: builds profiles, steps, and previews.
 3. **Save project**:
    - Frontend serializes state to a Python script.
    - Sends it to `/api/save-script`.
-   - Backend writes the named and versioned file to `./data/projects`.
+   - Backend archives the previous state and atomically replaces the named file in `./data/projects`.
    - Frontend treats the server-side library as the source of truth and shows a success banner.
 4. **Load project**:
    - Frontend lists `/api/projects` and requests the selected file from `/api/projects/{filename}`.
    - Existing scripts from older releases remain importable.
 5. **Build binary**:
-   - Frontend sends script, version, and base filename to `/api/build-binary`.
+   - Frontend sends the script and project name to `/api/build-binary`.
    - Backend runs PyInstaller in a temp dir and stores the binary under `./data/generated_binary`.
    - Binary is streamed back; frontend downloads it.
 6. **Persistence**:
@@ -266,9 +269,8 @@ ancestry before logging in to GHCR and running the Docker build and pushes.
   - Match host/NAS ownership or ACLs to `POSTI_UID` and `POSTI_GID`.
 - **A saved project is missing from the project library**:
   - Ensure both data subdirectories exist and are writable before starting the container.
-- **HTTP 401 from save/build**:
-  - Enter the `POSTI_API_TOKEN` value when prompted by the UI.
-  - The token is retained only in browser `sessionStorage`.
+- **HTTP 401 from project/build APIs**:
+  - Sign in on the PIN screen again; sessions expire and are cleared when the backend restarts.
 - **White screen after refresh / MIME errors**:
   - Clear the browser’s service worker (DevTools → Application → Service Workers → Unregister) so the latest `sw.js` is used.
 - **PyInstaller failures**:

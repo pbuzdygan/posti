@@ -10,10 +10,11 @@ import stat
 import subprocess
 import tempfile
 import time
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
@@ -30,15 +31,20 @@ STATIC_ROOT = Path(os.environ.get("STATIC_ROOT", "/app/static")).resolve()
 DATA_ROOT = Path(os.environ.get("POSTI_DATA_ROOT", "/app/data")).resolve()
 PROJECT_ROOT = DATA_ROOT / "projects"
 BINARY_ROOT = DATA_ROOT / "generated_binary"
-POSTI_API_TOKEN = os.environ.get("POSTI_API_TOKEN", "").strip()
-API_TOKEN_MIN_LENGTH = 32
-API_TOKEN_PLACEHOLDER = "replace-with-at-least-32-random-characters"
+HISTORY_ROOT = PROJECT_ROOT / ".history"
+POSTI_APP_PIN = os.environ.get("POSTI_APP_PIN", "").strip()
+SESSION_COOKIE = "posti_session"
+SESSION_TTL_SECONDS = int(os.environ.get("POSTI_SESSION_TTL_SECONDS", "43200"))
+COOKIE_SECURE = os.environ.get("POSTI_COOKIE_SECURE", "false").lower() in {"1", "true", "yes"}
+HISTORY_LIMIT = 10
 MAX_SCRIPT_BYTES = int(os.environ.get("POSTI_MAX_SCRIPT_BYTES", "1048576"))
 BUILD_TIMEOUT_SECONDS = int(os.environ.get("POSTI_BUILD_TIMEOUT_SECONDS", "180"))
 BUILD_QUEUE_TIMEOUT_SECONDS = int(os.environ.get("POSTI_BUILD_QUEUE_TIMEOUT_SECONDS", "2"))
 BUILD_TEMP_MAX_AGE_SECONDS = int(os.environ.get("POSTI_BUILD_TEMP_MAX_AGE_SECONDS", "86400"))
 VERSION_PATTERN = r"^[0-9]+(?:\.[0-9]+){0,2}$"
 build_semaphore = asyncio.Semaphore(1)
+sessions: dict[str, float] = {}
+login_attempts: defaultdict[str, deque[float]] = defaultdict(deque)
 
 
 class _RequestBodyTooLarge(Exception):
@@ -85,6 +91,10 @@ class ScriptSaveRequest(BaseModel):
     version: str = Field(pattern=VERSION_PATTERN, max_length=32)
 
 
+class LoginRequest(BaseModel):
+    pin: str = Field(min_length=4, max_length=128, pattern=r"^[0-9]+$")
+
+
 class ProjectSummary(BaseModel):
     filename: str
     size: int
@@ -127,6 +137,18 @@ def _cleanup_stale_builds() -> None:
                 logger.warning("Unable to inspect stale temporary file %s: %s", candidate, exc)
 
 
+def _archive_project(target: Path) -> None:
+    if not target.is_file():
+        return
+    history_dir = HISTORY_ROOT / target.stem
+    history_dir.mkdir(parents=True, exist_ok=True)
+    snapshot = history_dir / f"{time.time_ns()}.py"
+    shutil.copy2(target, snapshot)
+    snapshots = sorted(history_dir.glob("*.py"), key=lambda path: path.name, reverse=True)
+    for stale in snapshots[HISTORY_LIMIT:]:
+        stale.unlink(missing_ok=True)
+
+
 def _normalize_script(script: str) -> str:
     """Apply backend-side compatibility patches to older generated scripts."""
     if 'art = """' in script and 'art = r"""' not in script:
@@ -160,18 +182,12 @@ def _safe_project_candidate(filename: str) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
-def _require_api_token(x_posti_token: str | None = Header(default=None)) -> None:
-    if not POSTI_API_TOKEN:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="POSTI_API_TOKEN is not configured.",
-        )
-    if x_posti_token is None or not secrets.compare_digest(x_posti_token, POSTI_API_TOKEN):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing API token.",
-            headers={"WWW-Authenticate": "PostiToken"},
-        )
+def _require_session(request: Request) -> None:
+    token = request.cookies.get(SESSION_COOKIE, "")
+    expires_at = sessions.get(token, 0)
+    if not token or expires_at <= time.time():
+        sessions.pop(token, None)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="PIN login required.")
 
 
 def _run_pyinstaller(source: Path, tmp_root: Path) -> subprocess.CompletedProcess[str]:
@@ -191,17 +207,12 @@ async def lifespan(_: FastAPI):
     ensure_dir(DATA_ROOT)
     ensure_dir(PROJECT_ROOT)
     ensure_dir(BINARY_ROOT)
+    ensure_dir(HISTORY_ROOT)
     _check_data_dir("projects", PROJECT_ROOT)
     _check_data_dir("generated_binary", BINARY_ROOT)
     _cleanup_stale_builds()
-    if POSTI_API_TOKEN and (
-        len(POSTI_API_TOKEN) < API_TOKEN_MIN_LENGTH or POSTI_API_TOKEN == API_TOKEN_PLACEHOLDER
-    ):
-        raise RuntimeError(
-            f"POSTI_API_TOKEN must be a non-placeholder secret with at least {API_TOKEN_MIN_LENGTH} characters."
-        )
-    if not POSTI_API_TOKEN:
-        logger.error("[SECURITY] POSTI_API_TOKEN is not configured; write/build endpoints are disabled.")
+    if not re.fullmatch(r"[0-9]{4,}", POSTI_APP_PIN):
+        raise RuntimeError("POSTI_APP_PIN must contain at least four digits and no other characters.")
     yield
 
 
@@ -219,9 +230,9 @@ if cors_origins:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
-        allow_credentials=False,
+        allow_credentials=True,
         allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Content-Type", "X-Posti-Token"],
+        allow_headers=["Content-Type"],
         expose_headers=["X-Posti-Filename", "X-Posti-Project-Path"],
     )
 app.add_middleware(RequestBodyLimitMiddleware, max_body_size=MAX_SCRIPT_BYTES + 4096)
@@ -252,10 +263,52 @@ async def secure_responses_and_limit_content_length(request: Request, call_next)
 
 @app.get("/api/healthz")
 async def healthcheck() -> dict[str, str]:
-    return {"status": "ok", "api_auth": "configured" if POSTI_API_TOKEN else "disabled"}
+    return {"status": "ok", "authentication": "pin"}
 
 
-@app.post("/api/build-binary", dependencies=[Depends(_require_api_token)])
+@app.get("/api/auth/status")
+async def auth_status(request: Request) -> dict[str, bool]:
+    token = request.cookies.get(SESSION_COOKIE, "")
+    return {"authenticated": bool(token and sessions.get(token, 0) > time.time())}
+
+
+@app.post("/api/auth/login")
+async def login(payload: LoginRequest, request: Request):
+    client = request.client.host if request.client else "unknown"
+    now = time.time()
+    attempts = login_attempts[client]
+    while attempts and attempts[0] < now - 300:
+        attempts.popleft()
+    if len(attempts) >= 5:
+        raise HTTPException(status_code=429, detail="Too many PIN attempts. Try again later.")
+    if not secrets.compare_digest(payload.pin, POSTI_APP_PIN):
+        attempts.append(now)
+        raise HTTPException(status_code=401, detail="Invalid PIN.")
+    login_attempts.pop(client, None)
+    token = secrets.token_urlsafe(32)
+    sessions[token] = now + SESSION_TTL_SECONDS
+    response = JSONResponse({"authenticated": True})
+    response.set_cookie(
+        SESSION_COOKIE,
+        token,
+        max_age=SESSION_TTL_SECONDS,
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite="strict",
+        path="/",
+    )
+    return response
+
+
+@app.post("/api/auth/logout")
+async def logout(request: Request):
+    sessions.pop(request.cookies.get(SESSION_COOKIE, ""), None)
+    response = JSONResponse({"authenticated": False})
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    return response
+
+
+@app.post("/api/build-binary", dependencies=[Depends(_require_session)])
 async def build_binary(payload: BuildRequest):
     script = _normalize_script(payload.script.strip())
     if not script:
@@ -263,7 +316,7 @@ async def build_binary(payload: BuildRequest):
 
     version = payload.version or "1.0"
     base_name = _sanitize_name(payload.filename or "posti_cli", "posti_cli")
-    artifact_name = f"{base_name}_posti_{version}"
+    artifact_name = f"{base_name}_posti"
 
     try:
         await asyncio.wait_for(build_semaphore.acquire(), timeout=BUILD_QUEUE_TIMEOUT_SECONDS)
@@ -323,16 +376,17 @@ async def build_binary(payload: BuildRequest):
         build_semaphore.release()
 
 
-@app.post("/api/save-script", dependencies=[Depends(_require_api_token)])
+@app.post("/api/save-script", dependencies=[Depends(_require_session)])
 async def save_script(payload: ScriptSaveRequest):
     script = _normalize_script(payload.script.strip())
     if not script:
         raise HTTPException(status_code=400, detail="Script content is empty.")
 
     base = _sanitize_name(payload.filename or "posti", "posti")
-    target = PROJECT_ROOT / f"{base}_posti_{payload.version}.py"
+    target = PROJECT_ROOT / f"{base}_posti.py"
     temporary: Path | None = None
     try:
+        _archive_project(target)
         descriptor, temp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=PROJECT_ROOT)
         temporary = Path(temp_name)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
@@ -362,7 +416,7 @@ async def save_script(payload: ScriptSaveRequest):
 @app.get(
     "/api/projects",
     response_model=list[ProjectSummary],
-    dependencies=[Depends(_require_api_token)],
+    dependencies=[Depends(_require_session)],
 )
 async def list_projects(response: Response) -> list[ProjectSummary]:
     response.headers["Cache-Control"] = "no-store"
@@ -386,11 +440,49 @@ async def list_projects(response: Response) -> list[ProjectSummary]:
     return sorted(projects, key=lambda project: (-project.modified_at, project.filename.lower()))
 
 
-@app.get("/api/projects/{filename}", dependencies=[Depends(_require_api_token)])
+@app.get("/api/projects/{filename}", dependencies=[Depends(_require_session)])
 async def load_project(filename: str):
     project = _safe_project_candidate(filename)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found.")
+    return FileResponse(
+        path=project,
+        filename=project.name,
+        media_type="text/x-python",
+        headers={"Cache-Control": "no-store", "X-Posti-Filename": project.name},
+    )
+
+
+@app.post("/api/projects/{filename}/undo", dependencies=[Depends(_require_session)])
+async def undo_project_save(filename: str):
+    project = _safe_project_candidate(filename)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    history_dir = HISTORY_ROOT / project.stem
+    snapshots = sorted(history_dir.glob("*.py"), key=lambda path: path.name, reverse=True)
+    if not snapshots:
+        raise HTTPException(status_code=409, detail="No earlier save is available.")
+
+    snapshot = snapshots[0]
+    temporary: Path | None = None
+    try:
+        descriptor, temp_name = tempfile.mkstemp(prefix=f".{project.name}.", suffix=".tmp", dir=PROJECT_ROOT)
+        temporary = Path(temp_name)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(snapshot.read_bytes())
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.chmod(0o755)
+        os.replace(temporary, project)
+        temporary = None
+        snapshot.unlink()
+    except OSError as exc:
+        logger.exception("Unable to restore project %s: %s", project, exc)
+        raise HTTPException(status_code=500, detail="Unable to restore the earlier save.") from exc
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
     return FileResponse(
         path=project,
         filename=project.name,

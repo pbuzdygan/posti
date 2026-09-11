@@ -7,7 +7,8 @@ services:
     user: "${POSTI_UID:-1000}:${POSTI_GID:-1000}"
     environment:
       HOME: /tmp
-      POSTI_API_TOKEN: "${POSTI_API_TOKEN:?Set POSTI_API_TOKEN in .env}"
+      POSTI_APP_PIN: "${POSTI_APP_PIN:?Set POSTI_APP_PIN in .env}"
+      POSTI_COOKIE_SECURE: "${POSTI_COOKIE_SECURE:-false}"
     ports:
       - "127.0.0.1:${POSTI_PORT:-9012}:8000"
     volumes:

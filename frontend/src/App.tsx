@@ -429,16 +429,6 @@ const highlightPython = (code: string) =>
     )
     .join("");
 
-const bumpVersion = (version: string) => {
-  const [majorRaw = "1", minorRaw = "0"] = version.split(".");
-  const major = Number.parseInt(majorRaw, 10);
-  const minor = Number.parseInt(minorRaw, 10);
-  if (Number.isNaN(major) || Number.isNaN(minor)) {
-    return DEFAULT_VERSION;
-  }
-  return `${major}.${minor + 1}`;
-};
-
 const parseContentDispositionFilename = (header: string | null, fallback: string) => {
   if (!header) {
     return fallback;
@@ -454,32 +444,10 @@ const parseContentDispositionFilename = (header: string | null, fallback: string
   return fallback;
 };
 
-const POSTI_TOKEN_STORAGE_KEY = "posti-api-token";
-
 const apiFetch = async (url: string, init: RequestInit): Promise<Response> => {
-  const request = async (token: string | null) => {
-    const headers = new Headers(init.headers);
-    if (token) {
-      headers.set("X-Posti-Token", token);
-    }
-    return fetch(url, { ...init, headers });
-  };
-
-  const storedToken = window.sessionStorage.getItem(POSTI_TOKEN_STORAGE_KEY);
-  let response = await request(storedToken);
-  if (response.status !== 401) {
-    return response;
-  }
-
-  window.sessionStorage.removeItem(POSTI_TOKEN_STORAGE_KEY);
-  const suppliedToken = window.prompt("Enter the Posti API token configured on the server:")?.trim();
-  if (!suppliedToken) {
-    return response;
-  }
-
-  response = await request(suppliedToken);
-  if (response.ok) {
-    window.sessionStorage.setItem(POSTI_TOKEN_STORAGE_KEY, suppliedToken);
+  const response = await fetch(url, { ...init, credentials: "include" });
+  if (response.status === 401) {
+    window.dispatchEvent(new Event("posti-auth-expired"));
   }
   return response;
 };
@@ -540,17 +508,34 @@ const App = () => {
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [projectVersion, setProjectVersion] = useState(DEFAULT_VERSION);
   const [isBuildingBinary, setIsBuildingBinary] = useState(false);
+  const [isUndoingSave, setIsUndoingSave] = useState(false);
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const profileSelectRef = useRef<HTMLDivElement | null>(null);
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
   const [installPromptEvent, setInstallPromptEvent] = useState<BeforeInstallPromptEvent | null>(null);
   const [installBannerDismissed, setInstallBannerDismissed] = useState(false);
   const [pwaSupportHint, setPwaSupportHint] = useState<string | null>(null);
+  const [authenticated, setAuthenticated] = useState(false);
+  const [authChecking, setAuthChecking] = useState(true);
   const isSaveMode = Boolean(hasUnsavedChanges);
   const builderBaseUrl =
     (import.meta.env.VITE_BUILDER_URL ? import.meta.env.VITE_BUILDER_URL.trim() : "/api").replace(/\/$/, "");
   const highlightedPreview = useMemo(() => (preview ? highlightPython(preview) : ""), [preview]);
   const projectReady = Boolean(projectName && loadedFileName);
+
+  useEffect(() => {
+    fetch(`${builderBaseUrl}/auth/status`, { credentials: "include" })
+      .then((response) => response.json())
+      .then((result: { authenticated?: boolean }) => setAuthenticated(Boolean(result.authenticated)))
+      .catch(() => setAuthenticated(false))
+      .finally(() => setAuthChecking(false));
+  }, [builderBaseUrl]);
+
+  useEffect(() => {
+    const lockApplication = () => setAuthenticated(false);
+    window.addEventListener("posti-auth-expired", lockApplication);
+    return () => window.removeEventListener("posti-auth-expired", lockApplication);
+  }, []);
 
   const markDirty = () => {
     setHasUnsavedChanges(true);
@@ -664,7 +649,7 @@ const App = () => {
       const detail = await response.text().catch(() => "");
       throw new Error(detail || `Status ${response.status}`);
     }
-    const filename = response.headers.get("X-Posti-Filename") ?? `${baseName}_posti_${versionLabel}.py`;
+    const filename = response.headers.get("X-Posti-Filename") ?? `${baseName}_posti.py`;
     return { filename };
   };
 
@@ -926,12 +911,6 @@ const App = () => {
   const buildScriptFromState = (versionOverride?: string) =>
     buildScript(buildPayload(), versionOverride ?? projectVersion);
 
-  const refreshPreviewVersion = (version: string) => {
-    if (preview) {
-      setPreview(buildScriptFromState(version));
-    }
-  };
-
   const handleSaveProject = async (projectNameOverride?: string) => {
     if (!hasUnsavedChanges) {
       flash("No changes to save.", "info");
@@ -942,17 +921,14 @@ const App = () => {
       flash("Create or load a project before saving profiles.", "warning");
       return;
     }
-    const nextVersion = bumpVersion(projectVersion);
-    const script = buildScriptFromState(nextVersion);
+    const script = buildScriptFromState();
     try {
-      const { filename } = await saveScriptToServer(script, nextVersion, baseName);
-      const saveName = filename || `${baseName}_posti_${nextVersion}.py`;
+      const { filename } = await saveScriptToServer(script, projectVersion, baseName);
+      const saveName = filename || `${baseName}_posti.py`;
       setLoadedFileName(saveName);
       setCurrentFileName(saveName);
       setProjectName(baseName);
       setHasUnsavedChanges(false);
-      setProjectVersion(nextVersion);
-      refreshPreviewVersion(nextVersion);
       flash(`Saved ${saveName} in the project library.`, "success");
     } catch (error) {
       console.error("Server persistence failed", error);
@@ -997,7 +973,7 @@ const App = () => {
         response.headers.get("X-Posti-Filename") ??
         parseContentDispositionFilename(
           response.headers.get("content-disposition"),
-          `${baseName}_posti_${versionLabel}`
+          `${baseName}_posti`
         );
       const link = document.createElement("a");
       link.href = URL.createObjectURL(blob);
@@ -1012,6 +988,33 @@ const App = () => {
       flash("Binary build failed. Ensure the backend PyInstaller service is available.", "error");
     } finally {
       setIsBuildingBinary(false);
+    }
+  };
+
+  const handleUndoSave = async () => {
+    if (!loadedFileName || !projectReady) {
+      return;
+    }
+    if (hasUnsavedChanges && !window.confirm("Discard unsaved edits and restore the previous saved state?")) {
+      return;
+    }
+    setIsUndoingSave(true);
+    try {
+      const response = await apiFetch(`${builderBaseUrl}/projects/${encodeURIComponent(loadedFileName)}/undo`, {
+        method: "POST"
+      });
+      if (!response.ok) {
+        flash(response.status === 409 ? "No earlier save is available." : "The earlier save could not be restored.", "warning");
+        return;
+      }
+      const restored = await response.text();
+      importProject(restored, loadedFileName);
+      flash("The previous saved state was restored.", "success");
+    } catch (error) {
+      console.error("Unable to undo project save", error);
+      flash("The earlier save could not be restored.", "error");
+    } finally {
+      setIsUndoingSave(false);
     }
   };
 
@@ -1291,6 +1294,16 @@ const App = () => {
 
   const selectedCount = selectedStepIds.size;
 
+  if (authChecking || !authenticated) {
+    return (
+      <PinGate
+        builderBaseUrl={builderBaseUrl}
+        checking={authChecking}
+        onAuthenticated={() => setAuthenticated(true)}
+      />
+    );
+  }
+
   return (
     <div className={`forge-shell theme-${theme}`}>
       <div className="top-row">
@@ -1415,6 +1428,15 @@ const App = () => {
             </div>
             <div className="operation-button-stack">
               <button
+                className="btn ghost"
+                onClick={() => void handleUndoSave()}
+                disabled={!projectReady || isUndoingSave}
+              >
+                {isUndoingSave ? "Restoring…" : "Undo last save"}
+              </button>
+            </div>
+            <div className="operation-button-stack">
+              <button
                 className={`btn ${isSaveMode ? "warning" : "ghost"}`}
                 onClick={() => {
                   void handleProjectAction();
@@ -1445,7 +1467,6 @@ const App = () => {
             <div className="file-indicator operations-file">
               <div className="file-meta-row">
                 <span>Current file</span>
-                <span className="version-chip">v{projectVersion}</span>
               </div>
               <strong>{hasUnsavedChanges ? `${currentFileName} *` : currentFileName}</strong>
             </div>
@@ -1677,6 +1698,75 @@ const App = () => {
         />
       )}
     </div>
+  );
+};
+
+type PinGateProps = {
+  builderBaseUrl: string;
+  checking: boolean;
+  onAuthenticated: () => void;
+};
+
+const PinGate = ({ builderBaseUrl, checking, onAuthenticated }: PinGateProps) => {
+  const [pin, setPin] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleLogin = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!/^\d{4,}$/.test(pin)) {
+      setError("PIN must contain at least four digits.");
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      const response = await fetch(`${builderBaseUrl}/auth/login`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin })
+      });
+      if (!response.ok) {
+        setError(response.status === 429 ? "Too many attempts. Try again later." : "Incorrect PIN.");
+        return;
+      }
+      setPin("");
+      onAuthenticated();
+    } catch {
+      setError("Posti is unavailable. Check the server connection.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <main className="pin-gate">
+      <form className="pin-card" onSubmit={handleLogin}>
+        <img src="/posti_banner_256.png" alt="Posti" />
+        <h1>Unlock Posti</h1>
+        <p>{checking ? "Checking your session…" : "Enter the application PIN to continue."}</p>
+        {!checking && (
+          <>
+            <input
+              type="password"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              minLength={4}
+              autoComplete="current-password"
+              value={pin}
+              onChange={(event) => setPin(event.target.value.replace(/\D/g, ""))}
+              aria-label="Application PIN"
+              autoFocus
+            />
+            {error && <p className="error">{error}</p>}
+            <button className="btn primary" type="submit" disabled={submitting}>
+              {submitting ? "Unlocking…" : "Unlock"}
+            </button>
+          </>
+        )}
+      </form>
+    </main>
   );
 };
 
