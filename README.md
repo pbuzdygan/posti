@@ -42,6 +42,7 @@ This repository contains a full web‑based designer and a backend builder wrapp
   - “Save project” updates that file and retains the previous ten saved states.
   - “Load project” lists the scripts stored under `data/projects`; no local file picker is used.
 - **Binary builds**
+  - “Download Python” exports the current editor state as `project-name_posti.py`.
   - One‑click “Build Binary” invokes PyInstaller in the backend.
   - Versioned binaries are stored under `data/generated_binary` and downloaded to the browser.
 - **PWA support**
@@ -189,7 +190,9 @@ one client temporarily block further login attempts.
    - The app updates `project-name_posti.py` and retains up to ten earlier saves.
    - Use **Undo last save** to restore those states one at a time.
    - The server copy is the source of truth and is opened later through **Load project**.
-6. **Build binary**
+6. **Download Python or build a binary**
+   - Click **Download Python** to download the current editor state as
+     `project-name_posti.py` without changing the saved project or its undo history.
    - Click **Build Binary** to create a standalone executable from the current configuration.
    - The `project-name_posti` binary is stored in `data/generated_binary` and downloaded to your browser.
 

@@ -444,6 +444,17 @@ const parseContentDispositionFilename = (header: string | null, fallback: string
   return fallback;
 };
 
+const downloadBlob = (blob: Blob, filename: string) => {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+};
+
 const apiFetch = async (url: string, init: RequestInit): Promise<Response> => {
   const response = await fetch(url, { ...init, credentials: "include" });
   if (response.status === 401) {
@@ -991,6 +1002,17 @@ const App = () => {
     }
   };
 
+  const handleDownloadPython = () => {
+    if (!projectReady || !projectName) {
+      flash("Create or load a project before downloading Python.", "warning");
+      return;
+    }
+    const script = buildScriptFromState();
+    const filename = `${projectName}_posti.py`;
+    downloadBlob(new Blob([script], { type: "text/x-python;charset=utf-8" }), filename);
+    flash(`Downloaded ${filename}.`, "success");
+  };
+
   const handleUndoSave = async () => {
     if (!loadedFileName || !projectReady) {
       return;
@@ -1443,6 +1465,16 @@ const App = () => {
                 }}
               >
                 {isSaveMode ? "Save project" : "Load project"}
+              </button>
+            </div>
+            <div className="operation-button-stack">
+              <button
+                className="btn ghost"
+                onClick={handleDownloadPython}
+                disabled={!projectReady}
+                title="Download the current editor state as a runnable Python script."
+              >
+                Download Python
               </button>
             </div>
             <div className="operation-button-stack">

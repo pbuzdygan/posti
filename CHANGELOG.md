@@ -45,6 +45,8 @@
 
 ### New Features
 
+- **Download Python** exports the current project as a directly runnable `.py`
+  file, providing a lightweight alternative to building a standalone binary.
 - **Undo last save** restores earlier project states, one save at a time, for up
   to the ten most recent changes.
 - A project-name field above **Active profile** now creates the initial project
