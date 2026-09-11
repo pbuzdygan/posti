@@ -211,3 +211,20 @@ For local development of the frontend only (outside the container):
    Production should retain the default same-origin `/api` URL.
 
 For most users, running via `docker compose` as described above is sufficient.
+
+## Container release channels
+
+Container images are built and published only when a GitHub Release is published.
+A normal push to `main` or `dev` runs tests and audits but never builds or
+publishes a container image.
+
+Select the intended branch as the release target and use its matching tag format:
+
+- a release targeting `main` uses `x.x.x` and publishes `latest` plus that version (for example,
+  `latest` and `2.1.0`);
+- a release targeting `dev` uses `dev_x.x.x` and publishes `dev_latest` plus that version (for example,
+  `dev_latest` and `dev_2.1.0`).
+
+The publishing workflow rejects other release targets and version formats. It
+also verifies that the released commit belongs to the selected branch before
+uploading either image tag.

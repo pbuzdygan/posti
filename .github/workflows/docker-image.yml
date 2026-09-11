@@ -2,7 +2,14 @@ name: Posti Publish Docker image to GHCR
 
 on:
   release:
-    types: [ published ]
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.event.release.target_commitish }}
+  cancel-in-progress: false
 
 jobs:
   build-and-push:
@@ -13,8 +20,61 @@ jobs:
       packages: write
 
     steps:
-      - name: Checkout repository
+      - name: Validate release channel and version
+        id: release
+        shell: bash
+        env:
+          RELEASE_TARGET: ${{ github.event.release.target_commitish }}
+          RELEASE_VERSION: ${{ github.event.release.tag_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          case "$RELEASE_TARGET" in
+            main)
+              if [[ ! "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "A main release tag must use x.x.x (for example 2.1.0)." >&2
+                exit 1
+              fi
+              channel_tag="latest"
+              version_tag="$RELEASE_VERSION"
+              ;;
+            dev)
+              if [[ ! "$RELEASE_VERSION" =~ ^dev_[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "A dev release tag must use dev_x.x.x (for example dev_2.1.0)." >&2
+                exit 1
+              fi
+              channel_tag="dev_latest"
+              version_tag="$RELEASE_VERSION"
+              ;;
+            *)
+              echo "Release target must be either main or dev, got: $RELEASE_TARGET" >&2
+              exit 1
+              ;;
+          esac
+
+          image="ghcr.io/${REPOSITORY,,}"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "channel_tag=$channel_tag" >> "$GITHUB_OUTPUT"
+          echo "version_tag=$version_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout released version
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+
+      - name: Verify released commit belongs to selected branch
+        shell: bash
+        env:
+          RELEASE_TARGET: ${{ github.event.release.target_commitish }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$RELEASE_TARGET"
+          if ! git merge-base --is-ancestor HEAD "origin/$RELEASE_TARGET"; then
+            echo "The released commit does not belong to the $RELEASE_TARGET branch." >&2
+            exit 1
+          fi
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -23,20 +83,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build Docker image (no cache)
+      - name: Build Docker image
+        env:
+          IMAGE: ${{ steps.release.outputs.image }}
+          CHANNEL_TAG: ${{ steps.release.outputs.channel_tag }}
+          VERSION_TAG: ${{ steps.release.outputs.version_tag }}
         run: |
           docker build \
             --no-cache \
-            -t ghcr.io/${{ github.repository }}:latest \
+            --tag "$IMAGE:$CHANNEL_TAG" \
+            --tag "$IMAGE:$VERSION_TAG" \
             .
 
-      - name: Push Docker image (latest)
-        run: docker push ghcr.io/${{ github.repository }}:latest
-
-      - name: Tag image with release version
+      - name: Push channel and version tags
+        env:
+          IMAGE: ${{ steps.release.outputs.image }}
+          CHANNEL_TAG: ${{ steps.release.outputs.channel_tag }}
+          VERSION_TAG: ${{ steps.release.outputs.version_tag }}
         run: |
-          VERSION=${{ github.event.release.tag_name }}
-          echo "Tagging image as $VERSION"
-          docker tag ghcr.io/${{ github.repository }}:latest ghcr.io/${{ github.repository }}:$VERSION
-          docker push ghcr.io/${{ github.repository }}:$VERSION
-
+          docker push "$IMAGE:$CHANNEL_TAG"
+          docker push "$IMAGE:$VERSION_TAG"

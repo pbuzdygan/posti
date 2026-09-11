@@ -27,8 +27,10 @@
   NAS ACL problem is visible before a user tries to save work.
 - The application stack and build tools have been refreshed to supported releases,
   including a supported Node.js LTS line and a patched PyInstaller release.
-- Automated tests, dependency checks, production builds, and update monitoring now
+- Automated tests, dependency checks, frontend builds, and update monitoring now
   run continuously to catch regressions and vulnerable packages earlier.
+- Development releases now publish under separate image names, so testing a new
+  version can no longer replace the production image used by regular deployments.
 - Deployment, migration, security, and troubleshooting instructions now reflect
   the safer defaults introduced in this release.
 
