@@ -37,7 +37,8 @@ This repository contains a full web‑based designer and a backend builder wrapp
   - Live preview of the generated runner with Python syntax highlighting.
   - “Generate preview” and “Copy to clipboard” actions.
 - **Project persistence**
-  - “New project” asks for a project name used in every generated artifact.
+  - The Profiles panel stays locked until a named project is created or loaded.
+  - Confirming a new project name immediately creates its version `1.0` file.
   - “Save project” produces versioned files like `workstation_posti_1.2.py`.
   - “Load project” lists the scripts stored under `data/projects`; no local file picker is used.
 - **Binary builds**
@@ -161,12 +162,15 @@ Only one binary build is admitted at a time. Compose also limits Posti to 2 CPUs
 ## Using the designer
 
 1. **Create or load a project**
-   - Click **New project** and provide a name. Unsafe filename characters are replaced automatically.
+   - Enter a name above **Active profile** and click **Create project**. Posti immediately
+     creates `project-name_posti_1.0.py`; unsafe filename characters are replaced automatically.
+   - **New project** clears the current workspace and returns to this naming step.
    - Alternatively, click **Load project** and choose a saved script from `data/projects`.
    - Older `posti_vX.Y.py` scripts already present in that directory remain loadable.
+   - Profile controls remain dimmed and unavailable until creation or loading succeeds.
 2. **Create a profile**
    - In the **Profiles** panel, click **Add**, name your profile and confirm.
-   - The “Add” button pulses when no profiles exist to guide new users.
+   - These controls become available after the project file has been created or loaded.
 3. **Compose steps**
    - Use the **Step composer** to add steps with a title, description and command.
    - Toggle **Confirm** if a step should require confirmation at runtime.

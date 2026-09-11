@@ -58,7 +58,8 @@ Persistent data is stored outside the container in a bind-mounted `data/` direct
 - `src/App.tsx` – Main React component. Handles:
   - Profile CRUD (state management for profiles and steps).
   - Step composer state, multi-selection logic and bulk actions.
-  - Operations panel actions (New project, Load/Save, Build Binary).
+  - Named project creation, locked/unlocked profile state, and operations actions
+    (New project, Load/Save, Build Binary).
   - posti.py preview generation, copy-to-clipboard, syntax highlighting.
   - PWA install banner and theme toggle.
   - UI layout (Profiles, Operations, Step composer, Steps, Preview).
@@ -217,20 +218,23 @@ ancestry before logging in to GHCR and running the Docker build and pushes.
 
 ## Data flow summary
 
-1. **User interacts with SPA**: builds profiles, steps, and previews.
-2. **Save project**:
+1. **Create or load project**:
+   - Confirming the inline project name persists an empty version `1.0` script.
+   - Profile editing remains locked until that save succeeds or a library file is loaded.
+2. **User interacts with SPA**: builds profiles, steps, and previews.
+3. **Save project**:
    - Frontend serializes state to a Python script.
    - Sends it to `/api/save-script`.
    - Backend writes the named and versioned file to `./data/projects`.
    - Frontend treats the server-side library as the source of truth and shows a success banner.
-3. **Load project**:
+4. **Load project**:
    - Frontend lists `/api/projects` and requests the selected file from `/api/projects/{filename}`.
    - Existing scripts from older releases remain importable.
-4. **Build binary**:
+5. **Build binary**:
    - Frontend sends script, version, and base filename to `/api/build-binary`.
    - Backend runs PyInstaller in a temp dir and stores the binary under `./data/generated_binary`.
    - Binary is streamed back; frontend downloads it.
-5. **Persistence**:
+6. **Persistence**:
    - If `./data/projects` or `./data/generated_binary` are not writable, startup
      fails so an ownership or ACL error cannot be mistaken for successful persistence.
 

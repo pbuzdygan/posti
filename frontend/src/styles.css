@@ -290,23 +290,6 @@ button {
   transform: translateY(-1px);
 }
 
-.btn.pulse {
-  position: relative;
-  animation: pulse 1.4s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  0% {
-    box-shadow: 0 0 0 0 rgba(36, 184, 198, 0.65);
-  }
-  70% {
-    box-shadow: 0 0 0 10px rgba(36, 184, 198, 0);
-  }
-  100% {
-    box-shadow: 0 0 0 0 rgba(36, 184, 198, 0);
-  }
-}
-
 .operations-panel {
   margin-left: auto;
 }
@@ -385,6 +368,42 @@ button {
   align-items: flex-end;
   flex-wrap: wrap;
   justify-content: space-between;
+}
+
+.project-name-control {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.7rem;
+  margin-bottom: 0.35rem;
+}
+
+.project-name-control label {
+  flex: 1 1 auto;
+}
+
+.project-name-control input {
+  width: 100%;
+}
+
+.project-name-control .btn {
+  flex: 0 0 auto;
+}
+
+.project-name-hint {
+  margin: 0 0 1rem;
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+.profile-work-area {
+  transition: opacity 160ms ease, filter 160ms ease;
+}
+
+.profile-work-area.locked {
+  opacity: 0.38;
+  filter: grayscale(0.65);
+  pointer-events: none;
+  user-select: none;
 }
 
 .profile-actions {

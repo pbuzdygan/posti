@@ -33,13 +33,15 @@
   version can no longer replace the production image used by regular deployments.
 - Saved projects are now opened directly from Posti's project library instead of
   from unrelated browser downloads, keeping one clear source of truth.
+- Profile editing now becomes available only after a project is safely created or
+  loaded, making the intended order of work clear and preventing unnamed projects.
 - Deployment, migration, security, and troubleshooting instructions now reflect
   the safer defaults introduced in this release.
 
 ### New Features
 
-- **New project** now asks for a project name and carries it into readable,
-  consistent script and binary names such as `workstation_posti_2.1`.
+- A project-name field above **Active profile** now creates the initial project
+  file immediately and carries its name into readable scripts and binaries.
 - **Load project** now presents the projects available on the server, including
   files saved by earlier Posti releases.
 - Administrators can choose the owner of generated files with `POSTI_UID` and

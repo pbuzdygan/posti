@@ -42,11 +42,6 @@ type ProjectSummary = {
   modified_at: number;
 };
 
-type ProjectNameModalState = {
-  mode: "new" | "current";
-  nextAction?: "save" | "build";
-};
-
 const emptyStepForm = { title: "", description: "", command: "", confirm: false };
 
 const createStepId = () => {
@@ -536,7 +531,8 @@ const App = () => {
   const [pendingDelete, setPendingDelete] = useState(false);
   const [loadedFileName, setLoadedFileName] = useState<string | null>(null);
   const [projectName, setProjectName] = useState("");
-  const [projectNameModalState, setProjectNameModalState] = useState<ProjectNameModalState | null>(null);
+  const [projectNameInput, setProjectNameInput] = useState("");
+  const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [projectBrowserOpen, setProjectBrowserOpen] = useState(false);
   const [availableProjects, setAvailableProjects] = useState<ProjectSummary[]>([]);
   const [projectBrowserLoading, setProjectBrowserLoading] = useState(false);
@@ -554,6 +550,7 @@ const App = () => {
   const builderBaseUrl =
     (import.meta.env.VITE_BUILDER_URL ? import.meta.env.VITE_BUILDER_URL.trim() : "/api").replace(/\/$/, "");
   const highlightedPreview = useMemo(() => (preview ? highlightPython(preview) : ""), [preview]);
+  const projectReady = Boolean(projectName && loadedFileName);
 
   const markDirty = () => {
     setHasUnsavedChanges(true);
@@ -681,7 +678,6 @@ const App = () => {
   }, [theme]);
 
   const projectEmpty = profileOrder.length === 0;
-  const hasProfiles = profileOrder.length > 0;
 
   const updateCurrentProfile = (updater: (profile: Profile) => Profile) => {
     if (!currentProfile) {
@@ -943,7 +939,7 @@ const App = () => {
     }
     const baseName = projectNameOverride || projectName;
     if (!baseName) {
-      setProjectNameModalState({ mode: "current", nextAction: "save" });
+      flash("Create or load a project before saving profiles.", "warning");
       return;
     }
     const nextVersion = bumpVersion(projectVersion);
@@ -981,7 +977,7 @@ const App = () => {
     }
     const baseName = projectNameOverride || projectName;
     if (!baseName) {
-      setProjectNameModalState({ mode: "current", nextAction: "build" });
+      flash("Create or load a project before building a binary.", "warning");
       return;
     }
     const script = buildScriptFromState();
@@ -1019,7 +1015,7 @@ const App = () => {
     }
   };
 
-  const performResetProject = (name: string) => {
+  const performResetProject = () => {
     setProfiles({});
     setProfileOrder([]);
     setActiveProfileKey("");
@@ -1028,17 +1024,52 @@ const App = () => {
     setSelectedStepIds(new Set());
     setPreview("");
     setLoadedFileName(null);
-    setProjectName(name);
-    setCurrentFileName(`${name} (not saved)`);
+    setProjectName("");
+    setProjectNameInput("");
+    setCurrentFileName("Name a project to begin");
     setHasUnsavedChanges(false);
     setProjectVersion(DEFAULT_VERSION);
     setPendingDelete(false);
-    flash(`Blank project "${name}" ready.`, "success");
+    flash("Enter a project name to begin.", "info");
   };
 
   const handleNewProjectClick = () => {
     setPendingDelete(false);
-    setProjectNameModalState({ mode: "new" });
+    if (hasUnsavedChanges && !window.confirm("Discard unsaved changes and start a new project?")) {
+      return;
+    }
+    performResetProject();
+  };
+
+  const handleCreateProject = async (event: FormEvent) => {
+    event.preventDefault();
+    const name = normalizeProjectName(projectNameInput);
+    if (!name) {
+      flash("Project name must contain at least one letter or number.", "warning");
+      return;
+    }
+
+    setIsCreatingProject(true);
+    try {
+      const script = buildScript({}, DEFAULT_VERSION);
+      const { filename } = await saveScriptToServer(script, DEFAULT_VERSION, name);
+      setProfiles({});
+      setProfileOrder([]);
+      setActiveProfileKey("");
+      setPreview("");
+      setProjectName(name);
+      setProjectNameInput(name);
+      setLoadedFileName(filename);
+      setCurrentFileName(filename);
+      setProjectVersion(DEFAULT_VERSION);
+      setHasUnsavedChanges(false);
+      flash(`Project ${filename} created. Profiles are ready.`, "success");
+    } catch (error) {
+      console.error("Unable to create project", error);
+      flash("Project could not be created in data/projects.", "error");
+    } finally {
+      setIsCreatingProject(false);
+    }
   };
 
   const importProject = (text: string, filename: string) => {
@@ -1076,7 +1107,9 @@ const App = () => {
     setPreview("");
     setCurrentFileName(filename);
     setLoadedFileName(filename);
-    setProjectName(extractProjectName(filename));
+    const loadedProjectName = extractProjectName(filename);
+    setProjectName(loadedProjectName);
+    setProjectNameInput(loadedProjectName);
     setHasUnsavedChanges(false);
     setProjectVersion(extracted.version ?? DEFAULT_VERSION);
     setPendingDelete(false);
@@ -1126,29 +1159,11 @@ const App = () => {
     }
   };
 
-  const handleProjectNameSave = (rawName: string) => {
-    const name = normalizeProjectName(rawName);
-    if (!projectNameModalState || !name) {
-      return;
-    }
-    const { mode, nextAction } = projectNameModalState;
-    setProjectNameModalState(null);
-    if (mode === "new") {
-      performResetProject(name);
-      return;
-    }
-    setProjectName(name);
-    if (!loadedFileName) {
-      setCurrentFileName(`${name} (not saved)`);
-    }
-    if (nextAction === "save") {
-      void handleSaveProject(name);
-    } else if (nextAction === "build") {
-      void handleBuildBinary(name);
-    }
-  };
-
   const handleAddProfile = () => {
+    if (!projectReady) {
+      flash("Create or load a project first.", "warning");
+      return;
+    }
     setProfileModalState({ mode: "add" });
   };
 
@@ -1281,67 +1296,91 @@ const App = () => {
       <div className="top-row">
         <div className="panel profile-toolbar">
           <div className="panel-title">Profiles</div>
-          <div className="profile-toolbar-row">
-            <div className="profile-selector">
-              <span>Active profile</span>
-              <div
-                className={`custom-select ${isProfileMenuOpen ? "open" : ""}`}
-                ref={profileSelectRef}
-              >
-                <button
-                  type="button"
-                  id="profile-select-trigger"
-                  className="custom-select-trigger"
-                  onClick={() => {
-                    if (!profileOrder.length) {
-                      return;
-                    }
-                    setIsProfileMenuOpen((prev) => !prev);
-                  }}
-                  disabled={!profileOrder.length}
-                  aria-haspopup="listbox"
-                  aria-expanded={isProfileMenuOpen}
+          <form className="project-name-control" onSubmit={handleCreateProject}>
+            <label>
+              <span>Project name</span>
+              <input
+                value={projectNameInput}
+                onChange={(event) => setProjectNameInput(event.target.value)}
+                placeholder="workstation-setup"
+                disabled={projectReady || isCreatingProject}
+                aria-describedby="project-name-hint"
+              />
+            </label>
+            <button className="btn primary" type="submit" disabled={projectReady || isCreatingProject}>
+              {isCreatingProject ? "Creating…" : projectReady ? "Created" : "Create project"}
+            </button>
+          </form>
+          <p id="project-name-hint" className="project-name-hint muted">
+            {projectReady
+              ? `Project library file: ${loadedFileName}`
+              : "Create a project file before adding profiles, or load an existing project."}
+          </p>
+          <div className={`profile-work-area ${projectReady ? "" : "locked"}`} aria-disabled={!projectReady}>
+            <div className="profile-toolbar-row">
+              <div className="profile-selector">
+                <span>Active profile</span>
+                <div
+                  className={`custom-select ${isProfileMenuOpen ? "open" : ""}`}
+                  ref={profileSelectRef}
                 >
-                  <span>{currentProfile ? currentProfile.label : "No profiles"}</span>
-                  <span className="chevron">{isProfileMenuOpen ? "▲" : "▼"}</span>
+                  <button
+                    type="button"
+                    id="profile-select-trigger"
+                    className="custom-select-trigger"
+                    onClick={() => {
+                      if (!projectReady || !profileOrder.length) {
+                        return;
+                      }
+                      setIsProfileMenuOpen((prev) => !prev);
+                    }}
+                    disabled={!projectReady || !profileOrder.length}
+                    aria-haspopup="listbox"
+                    aria-expanded={isProfileMenuOpen}
+                  >
+                    <span>{currentProfile ? currentProfile.label : "No profiles"}</span>
+                    <span className="chevron">{isProfileMenuOpen ? "▲" : "▼"}</span>
+                  </button>
+                  {isProfileMenuOpen && (
+                    <ul className="custom-select-menu" role="listbox" aria-labelledby="profile-select-trigger">
+                      {profileOrder.map((key) => (
+                        <li key={key}>
+                          <button
+                            type="button"
+                            className={key === activeProfileKey ? "active" : ""}
+                            onClick={() => {
+                              setActiveProfileKey(key);
+                              setIsProfileMenuOpen(false);
+                            }}
+                          >
+                            {profiles[key]?.label ?? key}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
+              <div className="button-row compact profile-actions">
+                <button className="btn ghost" onClick={handleAddProfile} disabled={!projectReady}>
+                  Add
                 </button>
-                {isProfileMenuOpen && (
-                  <ul className="custom-select-menu" role="listbox" aria-labelledby="profile-select-trigger">
-                    {profileOrder.map((key) => (
-                      <li key={key}>
-                        <button
-                          type="button"
-                          className={key === activeProfileKey ? "active" : ""}
-                          onClick={() => {
-                            setActiveProfileKey(key);
-                            setIsProfileMenuOpen(false);
-                          }}
-                        >
-                          {profiles[key]?.label ?? key}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
+                <button className="btn ghost" onClick={handleEditProfile} disabled={!currentProfile}>
+                  Edit
+                </button>
+                <button
+                  className={`btn ghost ${pendingDelete ? "danger" : ""}`}
+                  onClick={handleRemoveClick}
+                  disabled={!currentProfile}
+                >
+                  {pendingDelete ? "Confirm" : "Remove"}
+                </button>
               </div>
             </div>
-            <div className="button-row compact profile-actions">
-              <button className={`btn ghost ${hasProfiles ? "" : "pulse"}`} onClick={handleAddProfile}>
-                Add
-              </button>
-              <button className="btn ghost" onClick={handleEditProfile} disabled={!currentProfile}>
-                Edit
-              </button>
-              <button
-                className={`btn ghost ${pendingDelete ? "danger" : ""}`}
-                onClick={handleRemoveClick}
-                disabled={!currentProfile}
-              >
-                {pendingDelete ? "Confirm" : "Remove"}
-              </button>
-            </div>
+            {!currentProfile && (
+              <p className="muted">{projectReady ? "No profiles yet. Start by adding one." : "Profiles are locked."}</p>
+            )}
           </div>
-          {!currentProfile && <p className="muted">No profiles yet. Start by adding one.</p>}
         </div>
 
         <div className="panel banner-panel">
@@ -1626,15 +1665,6 @@ const App = () => {
         />
       )}
 
-      {projectNameModalState && (
-        <ProjectNameModal
-          initialName={projectNameModalState.mode === "current" ? projectName : ""}
-          discardsCurrentProject={projectNameModalState.mode === "new" && hasUnsavedChanges}
-          onCancel={() => setProjectNameModalState(null)}
-          onSave={handleProjectNameSave}
-        />
-      )}
-
       {projectBrowserOpen && (
         <ProjectBrowserModal
           projects={availableProjects}
@@ -1646,59 +1676,6 @@ const App = () => {
           }}
         />
       )}
-    </div>
-  );
-};
-
-type ProjectNameModalProps = {
-  initialName: string;
-  discardsCurrentProject: boolean;
-  onCancel: () => void;
-  onSave: (name: string) => void;
-};
-
-const ProjectNameModal = ({ initialName, discardsCurrentProject, onCancel, onSave }: ProjectNameModalProps) => {
-  const [name, setName] = useState(initialName);
-  const [error, setError] = useState<string | null>(null);
-  const normalizedName = normalizeProjectName(name);
-
-  const handleSubmit = (event: FormEvent) => {
-    event.preventDefault();
-    if (!normalizedName) {
-      setError("Project name must contain at least one letter or number.");
-      return;
-    }
-    onSave(normalizedName);
-  };
-
-  return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="project-name-title">
-      <form className="modal" onSubmit={handleSubmit}>
-        <h3 id="project-name-title">Project name</h3>
-        <label>
-          <span>Name used for project files and binaries</span>
-          <input
-            value={name}
-            onChange={(event) => {
-              setName(event.target.value);
-              setError(null);
-            }}
-            autoFocus
-            placeholder="workstation-setup"
-          />
-        </label>
-        {normalizedName && <p className="muted">File name: {normalizedName}_posti_X.Y.py</p>}
-        {discardsCurrentProject && <p className="error">Unsaved changes in the current project will be discarded.</p>}
-        {error && <p className="error">{error}</p>}
-        <div className="button-row">
-          <button type="button" className="btn ghost" onClick={onCancel}>
-            Cancel
-          </button>
-          <button type="submit" className="btn primary">
-            Continue
-          </button>
-        </div>
-      </form>
     </div>
   );
 };
