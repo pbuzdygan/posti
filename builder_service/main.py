@@ -13,7 +13,7 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
@@ -85,6 +85,12 @@ class ScriptSaveRequest(BaseModel):
     version: str = Field(pattern=VERSION_PATTERN, max_length=32)
 
 
+class ProjectSummary(BaseModel):
+    filename: str
+    size: int
+    modified_at: float
+
+
 def ensure_dir(path: Path) -> Path:
     """Create a persistence directory or fail with a useful startup error."""
     path.mkdir(parents=True, exist_ok=True)
@@ -141,6 +147,15 @@ def _check_data_dir(label: str, path: Path) -> None:
 def _safe_static_candidate(full_path: str) -> Path | None:
     candidate = (STATIC_ROOT / full_path).resolve()
     if not candidate.is_relative_to(STATIC_ROOT):
+        return None
+    return candidate if candidate.is_file() else None
+
+
+def _safe_project_candidate(filename: str) -> Path | None:
+    if not filename or Path(filename).name != filename or not filename.lower().endswith(".py"):
+        return None
+    candidate = (PROJECT_ROOT / filename).resolve()
+    if not candidate.is_relative_to(PROJECT_ROOT):
         return None
     return candidate if candidate.is_file() else None
 
@@ -207,6 +222,7 @@ if cors_origins:
         allow_credentials=False,
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["Content-Type", "X-Posti-Token"],
+        expose_headers=["X-Posti-Filename", "X-Posti-Project-Path"],
     )
 app.add_middleware(RequestBodyLimitMiddleware, max_body_size=MAX_SCRIPT_BYTES + 4096)
 
@@ -247,7 +263,7 @@ async def build_binary(payload: BuildRequest):
 
     version = payload.version or "1.0"
     base_name = _sanitize_name(payload.filename or "posti_cli", "posti_cli")
-    artifact_name = f"{base_name}_v{version}"
+    artifact_name = f"{base_name}_posti_{version}"
 
     try:
         await asyncio.wait_for(build_semaphore.acquire(), timeout=BUILD_QUEUE_TIMEOUT_SECONDS)
@@ -314,7 +330,7 @@ async def save_script(payload: ScriptSaveRequest):
         raise HTTPException(status_code=400, detail="Script content is empty.")
 
     base = _sanitize_name(payload.filename or "posti", "posti")
-    target = PROJECT_ROOT / f"{base}_v{payload.version}.py"
+    target = PROJECT_ROOT / f"{base}_posti_{payload.version}.py"
     temporary: Path | None = None
     try:
         descriptor, temp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=PROJECT_ROOT)
@@ -340,6 +356,46 @@ async def save_script(payload: ScriptSaveRequest):
         filename=target.name,
         media_type="text/x-python",
         headers={"X-Posti-Filename": target.name, "X-Posti-Project-Path": relative_path},
+    )
+
+
+@app.get(
+    "/api/projects",
+    response_model=list[ProjectSummary],
+    dependencies=[Depends(_require_api_token)],
+)
+async def list_projects(response: Response) -> list[ProjectSummary]:
+    response.headers["Cache-Control"] = "no-store"
+    projects: list[ProjectSummary] = []
+    for candidate in PROJECT_ROOT.glob("*.py"):
+        safe_candidate = _safe_project_candidate(candidate.name)
+        if safe_candidate is None:
+            continue
+        try:
+            metadata = safe_candidate.stat()
+        except OSError as exc:
+            logger.warning("Unable to inspect project %s: %s", safe_candidate, exc)
+            continue
+        projects.append(
+            ProjectSummary(
+                filename=safe_candidate.name,
+                size=metadata.st_size,
+                modified_at=metadata.st_mtime,
+            )
+        )
+    return sorted(projects, key=lambda project: (-project.modified_at, project.filename.lower()))
+
+
+@app.get("/api/projects/{filename}", dependencies=[Depends(_require_api_token)])
+async def load_project(filename: str):
+    project = _safe_project_candidate(filename)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    return FileResponse(
+        path=project,
+        filename=project.name,
+        media_type="text/x-python",
+        headers={"Cache-Control": "no-store", "X-Posti-Filename": project.name},
     )
 
 

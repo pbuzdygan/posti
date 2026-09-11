@@ -51,8 +51,59 @@ def test_save_uses_validated_name_and_atomic_target() -> None:
             json={"script": "print('hello')", "filename": "../unsafe name", "version": "2.1.0"},
         )
     assert response.status_code == 200
-    assert response.headers["X-Posti-Filename"] == "unsafe-name_v2.1.0.py"
-    assert (DATA_ROOT / "projects" / "unsafe-name_v2.1.0.py").is_file()
+    assert response.headers["X-Posti-Filename"] == "unsafe-name_posti_2.1.0.py"
+    assert (DATA_ROOT / "projects" / "unsafe-name_posti_2.1.0.py").is_file()
+
+
+def test_project_list_and_load_use_server_storage() -> None:
+    older = DATA_ROOT / "projects" / "legacy_posti_v1.0.py"
+    older.write_text("print('legacy')", encoding="utf-8")
+    os.utime(older, (1, 1))
+    newer = DATA_ROOT / "projects" / "workstation_posti_2.1.py"
+    newer.write_text("print('current')", encoding="utf-8")
+    os.utime(newer, (2, 2))
+
+    headers = {"X-Posti-Token": "test-token-with-at-least-32-characters"}
+    with TestClient(main.app) as client:
+        listing = client.get("/api/projects", headers=headers)
+        loaded = client.get("/api/projects/workstation_posti_2.1.py", headers=headers)
+
+    assert listing.status_code == 200
+    filenames = [project["filename"] for project in listing.json()]
+    assert filenames.index("workstation_posti_2.1.py") < filenames.index("legacy_posti_v1.0.py")
+    assert loaded.status_code == 200
+    assert loaded.text == "print('current')"
+    assert loaded.headers["cache-control"] == "no-store"
+
+
+def test_project_endpoints_require_token_and_reject_unsafe_names() -> None:
+    headers = {"X-Posti-Token": "test-token-with-at-least-32-characters"}
+    with TestClient(main.app) as client:
+        unauthenticated = client.get("/api/projects")
+        missing = client.get("/api/projects/not-a-project.txt", headers=headers)
+
+    assert unauthenticated.status_code == 401
+    assert missing.status_code == 404
+
+
+def test_binary_uses_project_filename(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_pyinstaller(source: Path, tmp_root: Path):
+        binary = tmp_root / "dist" / "posti_cli"
+        binary.parent.mkdir()
+        binary.write_bytes(b"binary")
+        return type("Result", (), {"returncode": 0, "stderr": "", "stdout": ""})()
+
+    monkeypatch.setattr(main, "_run_pyinstaller", fake_pyinstaller)
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/build-binary",
+            headers={"X-Posti-Token": "test-token-with-at-least-32-characters"},
+            json={"script": "print('hello')", "filename": "workstation", "version": "2.1"},
+        )
+
+    assert response.status_code == 200
+    assert response.headers["X-Posti-Filename"] == "workstation_posti_2.1"
+    assert (DATA_ROOT / "generated_binary" / "workstation_posti_2.1").is_file()
 
 
 def test_version_rejects_path_segments() -> None:

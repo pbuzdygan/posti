@@ -861,6 +861,46 @@ body.theme-light .step-card.selected {
   font-size: 0.85rem;
 }
 
+.project-browser {
+  width: min(680px, 100%);
+  max-height: min(720px, calc(100vh - 2rem));
+}
+
+.project-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  overflow-y: auto;
+}
+
+.project-list li button {
+  width: 100%;
+  padding: 0.8rem 0.9rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.3rem;
+  color: var(--text);
+  background: var(--field-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.project-list li button:hover,
+.project-list li button:focus-visible {
+  border-color: var(--cyan);
+}
+
+.project-list li button span {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
 @media (min-width: 900px) {
   .masthead {
     flex-direction: row;

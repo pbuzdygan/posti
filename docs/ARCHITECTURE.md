@@ -11,13 +11,13 @@ Posti Forge is a full-stack web application packaged as a single Docker image. T
 - A **React + Vite** single-page application (SPA) that provides the designer UI.
 - A **FastAPI** backend that:
   - Serves the built frontend assets.
-  - Persists projects (`posti_vX.Y.py`) and compiled binaries.
-  - Exposes REST endpoints used by the frontend to save and build.
+  - Persists named projects (`project-name_posti_X.Y.py`) and compiled binaries.
+  - Exposes REST endpoints used by the frontend to list, load, save and build.
   - Provides a health check endpoint (`/api/healthz`).
 
 Persistent data is stored outside the container in a bind-mounted `data/` directory:
 
-- `data/projects` – Versioned posti.py scripts saved via “Save project”.
+- `data/projects` – Server-side project library used by “Save project” and “Load project”.
 - `data/generated_binary` – PyInstaller binaries produced via “Build Binary”.
 
 ---
@@ -65,6 +65,7 @@ Persistent data is stored outside the container in a bind-mounted `data/` direct
 - `src/postiTemplate.ts` – Defines the template for the generated `posti.py`. Provides helper functions:
   - `buildScript` (serialise profiles to Python).
   - `extractProfilesFromScript` (import an existing posti.py back into the designer).
+- `src/projectNames.ts` – Normalises project names and reads them from current or legacy filenames.
 - `src/data/content.ts` – Static data for marketing copy / placeholders.
 - `src/main.tsx` – Entry point registering the service worker and mounting `<App />`.
 - `public/manifest.webmanifest` – PWA manifest.
@@ -75,7 +76,11 @@ Persistent data is stored outside the container in a bind-mounted `data/` direct
 
 - `POST /api/save-script`
   - Body: `{ script: string, version: string, filename?: string }`.
-  - Saves the `posti.py` on the server (if possible) and streams it back.
+  - Saves the named `posti.py` in the server-side project library.
+- `GET /api/projects`
+  - Returns the project files available in the server-side library.
+- `GET /api/projects/{filename}`
+  - Returns the selected project after validating that its path remains inside the library.
 - `POST /api/build-binary`
   - Body: `{ script: string, version?: string, filename?: string }`.
   - Runs PyInstaller and streams the resulting binary.
@@ -108,6 +113,8 @@ Internally the frontend uses helper functions for versioning (e.g. bumping `1.3 
        `PROJECT_ROOT` (`/app/data/projects`).
      - Sets executable mode (`0755`).
      - Returns the saved file as a streamed response with headers describing the filename and relative path.
+   - `GET /api/projects` and `GET /api/projects/{filename}`
+     - Require `X-Posti-Token` and provide the list and contents used by the project library dialog.
    - `POST /api/build-binary`
      - Requires `X-Posti-Token`.
      - Creates a temporary build directory under `BINARY_ROOT`.
@@ -184,15 +191,16 @@ Notes:
 
 ## CI/CD
 
-Located at `.github/workflows/docker-image.yml`:
+- `.github/workflows/ci.yml` runs backend/frontend tests, audits, type checking,
+  and the frontend build for pushes to `main` and `dev` and for pull requests.
+  It does not build or publish a container image.
+- `.github/workflows/docker-image.yml` builds and publishes a container only
+  when a GitHub Release is published:
+  - releases targeting `main` use `x.x.x` and publish `latest` plus `x.x.x`;
+  - releases targeting `dev` use `devx.x.x` and publish `dev_latest` plus `devx.x.x`.
 
-- Builds the Docker image on pushes to `main` and on GitHub releases.
-- Publishes images to GitHub Container Registry with tags:
-  - `ghcr.io/<OWNER>/<REPO>:latest` (main branch)
-  - `ghcr.io/<OWNER>/<REPO>:<tag>` (for tags/releases)
-  - `ghcr.io/<OWNER>/<REPO>:edge` (for non-tag pushes if desired via the logic in the workflow)
-
-The workflow uses `docker/login-action`, `docker/setup-buildx-action`, and `docker/build-push-action`.
+The publishing workflow validates the release target, tag format, and branch
+ancestry before logging in to GHCR and running the Docker build and pushes.
 
 ---
 
@@ -213,13 +221,16 @@ The workflow uses `docker/login-action`, `docker/setup-buildx-action`, and `dock
 2. **Save project**:
    - Frontend serializes state to a Python script.
    - Sends it to `/api/save-script`.
-   - Backend writes to `./data/projects` and streams the file back.
-   - Frontend downloads the file and shows a success banner.
-3. **Build binary**:
+   - Backend writes the named and versioned file to `./data/projects`.
+   - Frontend treats the server-side library as the source of truth and shows a success banner.
+3. **Load project**:
+   - Frontend lists `/api/projects` and requests the selected file from `/api/projects/{filename}`.
+   - Existing scripts from older releases remain importable.
+4. **Build binary**:
    - Frontend sends script, version, and base filename to `/api/build-binary`.
    - Backend runs PyInstaller in a temp dir and stores the binary under `./data/generated_binary`.
    - Binary is streamed back; frontend downloads it.
-4. **Persistence**:
+5. **Persistence**:
    - If `./data/projects` or `./data/generated_binary` are not writable, startup
      fails so an ownership or ACL error cannot be mistaken for successful persistence.
 
@@ -249,7 +260,7 @@ The workflow uses `docker/login-action`, `docker/setup-buildx-action`, and `dock
 - **Container logs show `[DATA] … is not writable`**:
   - The backend cannot write to the bind-mounted directory and exits intentionally.
   - Match host/NAS ownership or ACLs to `POSTI_UID` and `POSTI_GID`.
-- **“Saved posti_vX.Y.py” banner but file not on host**:
+- **A saved project is missing from the project library**:
   - Ensure both data subdirectories exist and are writable before starting the container.
 - **HTTP 401 from save/build**:
   - Enter the `POSTI_API_TOKEN` value when prompted by the UI.

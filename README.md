@@ -37,8 +37,9 @@ This repository contains a full web‑based designer and a backend builder wrapp
   - Live preview of the generated runner with Python syntax highlighting.
   - “Generate preview” and “Copy to clipboard” actions.
 - **Project persistence**
-  - “Save project” produces versioned files like `posti_v1.2.py`.
-  - Scripts are saved on the server under `data/projects` and downloaded to your browser.
+  - “New project” asks for a project name used in every generated artifact.
+  - “Save project” produces versioned files like `workstation_posti_1.2.py`.
+  - “Load project” lists the scripts stored under `data/projects`; no local file picker is used.
 - **Binary builds**
   - One‑click “Build Binary” invokes PyInstaller in the backend.
   - Versioned binaries are stored under `data/generated_binary` and downloaded to the browser.
@@ -121,7 +122,8 @@ do not publish the builder directly to an untrusted network.
 
 Under the bind‑mounted `data/` directory the backend expects:
 
-- `data/projects` – versioned `posti_vX.Y.py` project files (from **Save project**).
+- `data/projects` – the project library and source of truth used by **Save project**
+  and **Load project**, with names such as `workstation_posti_X.Y.py`.
 - `data/generated_binary` – built binaries (from **Build Binary**).
 
 Create these subfolders on the host before first start and make them writable by
@@ -158,21 +160,27 @@ Only one binary build is admitted at a time. Compose also limits Posti to 2 CPUs
 
 ## Using the designer
 
-1. **Create a profile**
+1. **Create or load a project**
+   - Click **New project** and provide a name. Unsafe filename characters are replaced automatically.
+   - Alternatively, click **Load project** and choose a saved script from `data/projects`.
+   - Older `posti_vX.Y.py` scripts already present in that directory remain loadable.
+2. **Create a profile**
    - In the **Profiles** panel, click **Add**, name your profile and confirm.
    - The “Add” button pulses when no profiles exist to guide new users.
-2. **Compose steps**
+3. **Compose steps**
    - Use the **Step composer** to add steps with a title, description and command.
    - Toggle **Confirm** if a step should require confirmation at runtime.
-3. **Preview posti.py**
+4. **Preview posti.py**
    - In the **posti.py preview** panel, click **Generate preview**.
    - Review the script; use **Copy to clipboard** if you want to paste it elsewhere.
-4. **Save project**
+5. **Save project**
    - Click **Save project** in the **Operations** panel.
-   - The app bumps the version (e.g. `1.0 → 1.1`), saves `posti_vX.Y.py` to `data/projects` (if possible) and downloads it to your browser.
-5. **Build binary**
+   - The app bumps the version (e.g. `1.0 → 1.1`) and saves
+     `project-name_posti_X.Y.py` to `data/projects`.
+   - The server copy is the source of truth and is opened later through **Load project**.
+6. **Build binary**
    - Click **Build Binary** to create a standalone executable from the current configuration.
-   - The binary is stored in `data/generated_binary` and downloaded to your browser.
+   - The `project-name_posti_X.Y` binary is stored in `data/generated_binary` and downloaded to your browser.
 
 ---
 
