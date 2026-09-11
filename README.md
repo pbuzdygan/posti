@@ -49,7 +49,20 @@ This repository contains a full web‑based designer and a backend builder wrapp
 
 ## Run with Docker (GHCR)
 
-The easiest way to get started is to use compose file:
+Posti 2.1 runs as a non-root user and requires an API token for operations that
+write projects or build binaries. Start by preparing the configuration and data
+directories:
+
+```bash
+cp .env.example .env
+sed -i "s/^POSTI_UID=.*/POSTI_UID=$(id -u)/" .env
+sed -i "s/^POSTI_GID=.*/POSTI_GID=$(id -g)/" .env
+# Replace POSTI_API_TOKEN in .env with a random value of at least 32 characters.
+mkdir -p data/projects data/generated_binary
+sudo chown -R "$(id -u):$(id -g)" data
+```
+
+The supplied production Compose configuration is equivalent to:
 
 ```yaml
 services:
@@ -57,10 +70,22 @@ services:
     image: ghcr.io/pbuzdygan/posti:latest
     container_name: posti
     restart: unless-stopped
+    user: "${POSTI_UID:-1000}:${POSTI_GID:-1000}"
+    environment:
+      HOME: /tmp
+      POSTI_API_TOKEN: "${POSTI_API_TOKEN:?Set POSTI_API_TOKEN in .env}"
     ports:
-      - "8012:8000"
+      - "127.0.0.1:${POSTI_PORT:-8012}:8000"
     volumes:
       - ./data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    mem_limit: 2g
+    cpus: 2.0
 ```
 
 ---
@@ -70,7 +95,6 @@ services:
 From the project root:
 
 ```bash
-docker compose build
 docker compose up -d
 ```
 
@@ -84,6 +108,13 @@ The default `docker-compose.yml` maps:
 
 This folder is used for persistence (see below).
 
+On the first **Save project** or **Build Binary** operation, the browser asks for
+the API token from `.env`. The token is retained only in browser `sessionStorage`.
+
+The port is deliberately bound to localhost. If Posti must be reachable from
+another machine, put it behind an authenticated HTTPS reverse proxy or a VPN;
+do not publish the builder directly to an untrusted network.
+
 ---
 
 ## Data persistence layout
@@ -93,12 +124,35 @@ Under the bind‑mounted `data/` directory the backend expects:
 - `data/projects` – versioned `posti_vX.Y.py` project files (from **Save project**).
 - `data/generated_binary` – built binaries (from **Build Binary**).
 
-You can create these subfolders yourself on the host, or let the backend attempt to create them. At startup, the backend logs a clear status for each area:
-
-- if the directory is missing or not writable, it logs a warning but the app still runs;
-- in that case, **downloads to the browser still work**, but nothing can be persisted to disk on the server.
+Create these subfolders on the host before first start and make them writable by
+the configured `POSTI_UID:POSTI_GID`. Startup now fails clearly if persistence is
+not writable instead of silently running with broken server-side saves.
 
 Binary artifacts and saved scripts are marked executable (0755) where the filesystem/ACLs allow it.
+
+### Migrating files previously owned by root
+
+Stop Posti and change the existing data tree once:
+
+```bash
+docker compose down
+sudo chown -R "$(grep '^POSTI_UID=' .env | cut -d= -f2):$(grep '^POSTI_GID=' .env | cut -d= -f2)" data
+docker compose up -d
+```
+
+For CIFS/NFS/NAS mounts, ownership may instead be controlled by share mount
+options or ACLs. Align `uid`, `gid`, `file_mode`, and `dir_mode` with `.env`.
+
+### Security and resource settings
+
+- `POSTI_MAX_SCRIPT_BYTES` — maximum script size; default 1 MiB.
+- `POSTI_BUILD_TIMEOUT_SECONDS` — PyInstaller timeout; default 180 seconds.
+- `POSTI_BUILD_QUEUE_TIMEOUT_SECONDS` — second build wait time; default 2 seconds.
+- `POSTI_BUILD_TEMP_MAX_AGE_SECONDS` — stale build cleanup age; default 24 hours.
+- `POSTI_CORS_ORIGINS` — explicit comma-separated origins; disabled by default.
+
+Only one binary build is admitted at a time. Compose also limits Posti to 2 CPUs,
+2 GiB of RAM and 256 processes; these values can be adjusted for larger builds.
 
 ---
 
@@ -152,6 +206,8 @@ For local development of the frontend only (outside the container):
 
    This starts Vite dev server (default http://localhost:5173/).
 
-3. Ensure the backend (FastAPI + PyInstaller service) is reachable from the dev server, or set `VITE_BUILDER_URL` to point to the running API (e.g. `http://localhost:8000/api`).
+3. Ensure the backend is reachable. For cross-origin development, set
+   `VITE_BUILDER_URL` and add the frontend URL to `POSTI_CORS_ORIGINS`.
+   Production should retain the default same-origin `/api` URL.
 
 For most users, running via `docker compose` as described above is sufficient.

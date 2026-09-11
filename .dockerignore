@@ -1,0 +1,13 @@
+.git
+.github
+.agents
+.codex
+.env
+data
+archive
+**/__pycache__
+**/.pytest_cache
+frontend/node_modules
+frontend/dist
+frontend/*.tsbuildinfo
+npm-debug.log*

@@ -1,11 +1,23 @@
-version: "3.9"
-
 services:
   posti:
     image: ghcr.io/pbuzdygan/posti:latest
     container_name: posti
     restart: unless-stopped
+    user: "${POSTI_UID:-1000}:${POSTI_GID:-1000}"
+    environment:
+      HOME: /tmp
+      POSTI_API_TOKEN: "${POSTI_API_TOKEN:?Set POSTI_API_TOKEN in .env}"
     ports:
-      - "8012:8000"
+      - "127.0.0.1:${POSTI_PORT:-8012}:8000"
     volumes:
       - ./data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 2g
+    cpus: 2.0

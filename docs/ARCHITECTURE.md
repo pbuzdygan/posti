@@ -48,7 +48,7 @@ Persistent data is stored outside the container in a bind-mounted `data/` direct
 
 ### Stack
 
-- **React 18** with functional components and hooks.
+- **React 19** with functional components and hooks.
 - **Vite** for development and production builds.
 - **TypeScript** for type safety in the SPA.
 - CSS modules collected in `src/styles.css`.
@@ -91,6 +91,7 @@ Internally the frontend uses helper functions for versioning (e.g. bumping `1.3 
 ### Runtime
 
 - **FastAPI** application served by **uvicorn**.
+- Write/build endpoints authenticate the `X-Posti-Token` header against `POSTI_API_TOKEN`.
 - Single module `builder_service/main.py` (copied as `main.py` in the container).
 - Python dependencies listed in `builder_service/requirements.txt` (FastAPI, Uvicorn, PyInstaller).
 
@@ -103,17 +104,19 @@ Internally the frontend uses helper functions for versioning (e.g. bumping `1.3 
 2. **API endpoints**
    - `GET /api/healthz` – returns `{ "status": "ok" }`.
    - `POST /api/save-script`
-     - Writes the provided script to `PROJECT_ROOT` (`/app/data/projects`).
-     - Sets executable mode (`0755`) if possible.
+     - Requires `X-Posti-Token`, validates the input and writes atomically to
+       `PROJECT_ROOT` (`/app/data/projects`).
+     - Sets executable mode (`0755`).
      - Returns the saved file as a streamed response with headers describing the filename and relative path.
    - `POST /api/build-binary`
+     - Requires `X-Posti-Token`.
      - Creates a temporary build directory under `BINARY_ROOT`.
-     - Runs `pyinstaller --onefile` to build `posti_cli`.
-     - Copies the resulting binary to `generated_binary`, sets executable bits, and streams it back.
+     - Runs one PyInstaller job at a time in a worker thread with a timeout.
+     - Atomically persists the binary, streams an isolated copy, and removes stale temporary builds.
 
 3. **Data directory handling**
-   - `ensure_dir` attempts to create `data/`, `projects` and `generated_binary` but ignores permission errors (allowing host-managed directories).
-   - At startup, `_check_data_dir` logs warnings if the directories are missing or not writable, without crashing the app.
+   - `ensure_dir` creates `data/`, `projects` and `generated_binary` when permitted.
+   - Startup fails if persistence is not writable by the configured UID/GID.
 
 4. **Logging**
    - Uses `logging.getLogger("posti.builder")`.
@@ -133,17 +136,18 @@ Both directories are expected to be bind-mounted from the host using Docker (see
 
 Multi-stage build:
 
-1. **Frontend stage (Node 20 alpine)**
+1. **Frontend stage (Node 24 alpine)**
    - Installs frontend dependencies (`npm ci`) and runs `npm run build`.
    - Outputs a static bundle under `/web/dist`.
 
 2. **Runtime stage (Python 3.11 slim)**
-   - Installs system dependencies (`build-essential` for PyInstaller).
+   - Installs only `binutils`, required by PyInstaller on Linux.
    - Copies backend requirements and installs them with `pip`.
    - Copies `builder_service/main.py` as `/app/main.py`.
    - Copies built frontend (`/web/dist`) into `/app/static`.
    - Ensures `/app/data` exists (host bind mount provides actual storage).
-   - Starts FastAPI via `uvicorn main:app`.
+   - Runs as non-root UID/GID `1000:1000` by default.
+   - Starts Uvicorn with connection and keep-alive limits.
 
 ---
 
@@ -156,17 +160,24 @@ services:
   posti:
     build: .
     container_name: posti
+    user: "${POSTI_UID:-1000}:${POSTI_GID:-1000}"
+    environment:
+      HOME: /tmp
+      POSTI_API_TOKEN: "${POSTI_API_TOKEN:?Set POSTI_API_TOKEN in .env}"
     ports:
-      - "8012:8000"
+      - "127.0.0.1:8012:8000"
     volumes:
       - ./data:/app/data
 ```
 
 Notes:
 
-- Port 8012 on the host maps to FastAPI port 8000.
+- Port 8012 on localhost maps to FastAPI port 8000.
 - `./data` on the host is bind-mounted to `/app/data`.
-- You can set the `user:` key if you need the container to run as a specific UID/GID (e.g. to match NAS ACLs).
+- `user:` determines ownership of files on the bind mount; the host directories
+  must already be writable by the selected numeric UID/GID.
+- Compose uses a read-only root filesystem, drops all Linux capabilities, enables
+  `no-new-privileges`, and applies process, CPU and memory limits.
 - To use a prebuilt image from GHCR, replace `build: .` with `image: ghcr.io/<OWNER>/<REPO>:latest`.
 
 ---
@@ -209,7 +220,8 @@ The workflow uses `docker/login-action`, `docker/setup-buildx-action`, and `dock
    - Backend runs PyInstaller in a temp dir and stores the binary under `./data/generated_binary`.
    - Binary is streamed back; frontend downloads it.
 4. **Persistence**:
-   - If `./data/projects` or `./data/generated_binary` are missing or read-only on the host, the backend logs warnings but still allows browser-only downloads.
+   - If `./data/projects` or `./data/generated_binary` are not writable, startup
+     fails so an ownership or ACL error cannot be mistaken for successful persistence.
 
 ---
 
@@ -225,7 +237,7 @@ The workflow uses `docker/login-action`, `docker/setup-buildx-action`, and `dock
   - Run `npm run build` to produce the bundle copied into the container.
 - **Persistent storage tweaks**:
   - If running on NAS/Synology, create `data/projects` and `data/generated_binary` with the desired ACLs before starting the container.
-  - The backend will not change permissions; it only logs warnings if it cannot write.
+  - The backend does not change host ownership and fails startup if it cannot write.
 - **PWA/Offline customization**:
   - Adjust `public/sw.js` if additional assets need caching.
   - Update `manifest.webmanifest` with new icons or metadata.
@@ -235,20 +247,21 @@ The workflow uses `docker/login-action`, `docker/setup-buildx-action`, and `dock
 ## Troubleshooting
 
 - **Container logs show `[DATA] … is not writable`**:
-  - The backend cannot write to the bind-mounted directory. Check host/NAS permissions.
-  - Downloads in the browser still work, but nothing is persisted server-side.
+  - The backend cannot write to the bind-mounted directory and exits intentionally.
+  - Match host/NAS ownership or ACLs to `POSTI_UID` and `POSTI_GID`.
 - **“Saved posti_vX.Y.py” banner but file not on host**:
-  - Same as above: the file was created inside `/app/data/projects` but the host mount is read-only or absent.
-  - Ensure `./data/projects` exists and is writable before running the container.
+  - Ensure both data subdirectories exist and are writable before starting the container.
+- **HTTP 401 from save/build**:
+  - Enter the `POSTI_API_TOKEN` value when prompted by the UI.
+  - The token is retained only in browser `sessionStorage`.
 - **White screen after refresh / MIME errors**:
   - Clear the browser’s service worker (DevTools → Application → Service Workers → Unregister) so the latest `sw.js` is used.
 - **PyInstaller failures**:
   - Check backend logs for stderr from PyInstaller (e.g. missing dependencies).
-  - Ensure the image has access to required system packages (already includes `build-essential`).
+  - Increase the configured timeout/resources if needed; the image includes `binutils`.
 
 ---
 
 ## Conclusion
 
 Posti Forge combines a modern web UI with a Python-based builder service to streamline the creation of `posti.py` scripts and standalone binaries. The Dockerised architecture keeps deployment simple: bind-mount a `data/` directory, expose one port, and everything else happens inside the container. This document should give you the context needed to explore, extend, or debug the system. Happy hacking!
-

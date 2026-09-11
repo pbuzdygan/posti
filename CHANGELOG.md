@@ -1,5 +1,46 @@
 # POSTI Forge – Changelog
 
+## 2.1.0 – 2026-09-11
+
+### Bug Fixes
+
+- Files saved in bind-mounted folders now belong to the UID and GID selected by
+  the administrator instead of unexpectedly being owned by root.
+- Requests can no longer use crafted paths to read files outside the public web
+  assets directory.
+- Profile content containing triple quotes no longer damages the generated Python
+  script, and projects created by earlier releases remain importable.
+- Project and binary files are replaced atomically, preventing partially written
+  artifacts when a save or build is interrupted.
+
+### Improvements
+
+- Posti now runs without root privileges and starts with a more restricted
+  container environment, reducing the impact of an application failure or attack.
+- The service listens on localhost by default, making accidental exposure to the
+  local network or Internet less likely.
+- Large, overlapping, or stalled build requests are rejected or stopped cleanly,
+  keeping the interface responsive and protecting disk, CPU, memory, and process capacity.
+- Invalid filenames and version values now produce predictable validation errors
+  instead of unexpected filesystem failures.
+- Startup reports unusable persistence permissions immediately, so an ownership or
+  NAS ACL problem is visible before a user tries to save work.
+- The application stack and build tools have been refreshed to supported releases,
+  including a supported Node.js LTS line and a patched PyInstaller release.
+- Automated tests, dependency checks, production builds, and update monitoring now
+  run continuously to catch regressions and vulnerable packages earlier.
+- Deployment, migration, security, and troubleshooting instructions now reflect
+  the safer defaults introduced in this release.
+
+### New Features
+
+- Administrators can choose the owner of generated files with `POSTI_UID` and
+  `POSTI_GID`, including deployments backed by NAS shares and bind mounts.
+- Saving projects and building binaries now require a private API token. The UI
+  asks for it when needed and keeps it only for the current browser session.
+- Administrators can configure script-size, build-time, queue-wait, temporary-file
+  retention, and permitted cross-origin access limits for their environment.
+
 ## 2.0.1 – 2025-12-05
 
 - Fixed the CLI banner in generated `posti.py` scripts by forcing a raw string literal to avoid Python escape warnings.

@@ -481,6 +481,36 @@ const downloadBlob = (blob: Blob, filename: string) => {
   URL.revokeObjectURL(url);
 };
 
+const POSTI_TOKEN_STORAGE_KEY = "posti-api-token";
+
+const apiFetch = async (url: string, init: RequestInit): Promise<Response> => {
+  const request = async (token: string | null) => {
+    const headers = new Headers(init.headers);
+    if (token) {
+      headers.set("X-Posti-Token", token);
+    }
+    return fetch(url, { ...init, headers });
+  };
+
+  const storedToken = window.sessionStorage.getItem(POSTI_TOKEN_STORAGE_KEY);
+  let response = await request(storedToken);
+  if (response.status !== 401) {
+    return response;
+  }
+
+  window.sessionStorage.removeItem(POSTI_TOKEN_STORAGE_KEY);
+  const suppliedToken = window.prompt("Enter the Posti API token configured on the server:")?.trim();
+  if (!suppliedToken) {
+    return response;
+  }
+
+  response = await request(suppliedToken);
+  if (response.ok) {
+    window.sessionStorage.setItem(POSTI_TOKEN_STORAGE_KEY, suppliedToken);
+  }
+  return response;
+};
+
 const handlePlaceholderFocus = (event: FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => {
   const target = event.currentTarget;
   if (!target.dataset.placeholder) {
@@ -649,7 +679,7 @@ const App = () => {
     versionLabel: string,
     baseName: string
   ): Promise<{ blob: Blob; filename: string }> => {
-    const response = await fetch(`${builderBaseUrl}/save-script`, {
+    const response = await apiFetch(`${builderBaseUrl}/save-script`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ script: content, version: versionLabel, filename: baseName })
@@ -975,7 +1005,7 @@ const App = () => {
     const versionLabel = projectVersion;
     setIsBuildingBinary(true);
     try {
-      const response = await fetch(buildBinaryUrl, {
+      const response = await apiFetch(buildBinaryUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ script, filename: baseName, version: versionLabel })
