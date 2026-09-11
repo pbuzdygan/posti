@@ -40,8 +40,8 @@ jobs:
               version_tag="$RELEASE_VERSION"
               ;;
             dev)
-              if [[ ! "$RELEASE_VERSION" =~ ^dev_[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-                echo "A dev release tag must use dev_x.x.x (for example dev_2.1.0)." >&2
+              if [[ ! "$RELEASE_VERSION" =~ ^dev[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "A dev release tag must use devx.x.x (for example dev2.1.0)." >&2
                 exit 1
               fi
               channel_tag="dev_latest"

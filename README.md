@@ -222,8 +222,8 @@ Select the intended branch as the release target and use its matching tag format
 
 - a release targeting `main` uses `x.x.x` and publishes `latest` plus that version (for example,
   `latest` and `2.1.0`);
-- a release targeting `dev` uses `dev_x.x.x` and publishes `dev_latest` plus that version (for example,
-  `dev_latest` and `dev_2.1.0`).
+- a release targeting `dev` uses `devx.x.x` and publishes `dev_latest` plus that version (for example,
+  `dev_latest` and `dev2.1.0`).
 
 The publishing workflow rejects other release targets and version formats. It
 also verifies that the released commit belongs to the selected branch before
