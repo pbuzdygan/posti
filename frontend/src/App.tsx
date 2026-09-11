@@ -1,5 +1,4 @@
 import {
-  ChangeEvent,
   FocusEvent,
   FormEvent,
   MouseEvent as ReactMouseEvent,
@@ -9,6 +8,7 @@ import {
   useState
 } from "react";
 import { buildScript, extractProfilesFromScript, SerializedProfiles, SerializedStep } from "./postiTemplate";
+import { extractProjectName, normalizeProjectName } from "./projectNames";
 import "./styles.css";
 
 type Step = {
@@ -36,17 +36,11 @@ type ProfileModalResult = {
   preflight: string[];
 };
 
-type FileHandle =
-  | {
-      kind?: string;
-      name?: string;
-      getFile?: () => Promise<File>;
-      createWritable?: () => Promise<{
-        write(data: Blob | BufferSource | string): Promise<void>;
-        close(): Promise<void>;
-      }>;
-    }
-  | null;
+type ProjectSummary = {
+  filename: string;
+  size: number;
+  modified_at: number;
+};
 
 const emptyStepForm = { title: "", description: "", command: "", confirm: false };
 
@@ -435,26 +429,6 @@ const highlightPython = (code: string) =>
     )
     .join("");
 
-const stripExtension = (name: string) => name.replace(/\.[^.]+$/, "");
-const extractBaseName = (name: string | null | undefined) => {
-  if (!name) {
-    return "posti";
-  }
-  const stripped = stripExtension(name.trim());
-  const match = stripped.match(/^(.*)_v\d+(?:\.\d+)?$/i);
-  return (match && match[1] ? match[1] : stripped) || "posti";
-};
-
-const bumpVersion = (version: string) => {
-  const [majorRaw = "1", minorRaw = "0"] = version.split(".");
-  const major = Number.parseInt(majorRaw, 10);
-  const minor = Number.parseInt(minorRaw, 10);
-  if (Number.isNaN(major) || Number.isNaN(minor)) {
-    return DEFAULT_VERSION;
-  }
-  return `${major}.${minor + 1}`;
-};
-
 const parseContentDispositionFilename = (header: string | null, fallback: string) => {
   if (!header) {
     return fallback;
@@ -479,6 +453,14 @@ const downloadBlob = (blob: Blob, filename: string) => {
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+};
+
+const apiFetch = async (url: string, init: RequestInit): Promise<Response> => {
+  const response = await fetch(url, { ...init, credentials: "include" });
+  if (response.status === 401) {
+    window.dispatchEvent(new Event("posti-auth-expired"));
+  }
+  return response;
 };
 
 const handlePlaceholderFocus = (event: FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => {
@@ -526,28 +508,48 @@ const App = () => {
   const [currentFileName, setCurrentFileName] = useState("No file loaded");
   const [profileModalState, setProfileModalState] = useState<null | { mode: "add" | "edit" }>(null);
   const [pendingDelete, setPendingDelete] = useState(false);
-  const [pendingNewProject, setPendingNewProject] = useState(false);
   const [loadedFileName, setLoadedFileName] = useState<string | null>(null);
+  const [projectName, setProjectName] = useState("");
+  const [projectNameInput, setProjectNameInput] = useState("");
+  const [isCreatingProject, setIsCreatingProject] = useState(false);
+  const [projectBrowserOpen, setProjectBrowserOpen] = useState(false);
+  const [availableProjects, setAvailableProjects] = useState<ProjectSummary[]>([]);
+  const [projectBrowserLoading, setProjectBrowserLoading] = useState(false);
+  const [projectBrowserError, setProjectBrowserError] = useState<string | null>(null);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [projectVersion, setProjectVersion] = useState(DEFAULT_VERSION);
   const [isBuildingBinary, setIsBuildingBinary] = useState(false);
-  const [fileHandle, setFileHandle] = useState<FileHandle>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [isUndoingSave, setIsUndoingSave] = useState(false);
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const profileSelectRef = useRef<HTMLDivElement | null>(null);
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
   const [installPromptEvent, setInstallPromptEvent] = useState<BeforeInstallPromptEvent | null>(null);
   const [installBannerDismissed, setInstallBannerDismissed] = useState(false);
   const [pwaSupportHint, setPwaSupportHint] = useState<string | null>(null);
+  const [authenticated, setAuthenticated] = useState(false);
+  const [authChecking, setAuthChecking] = useState(true);
   const isSaveMode = Boolean(hasUnsavedChanges);
   const builderBaseUrl =
     (import.meta.env.VITE_BUILDER_URL ? import.meta.env.VITE_BUILDER_URL.trim() : "/api").replace(/\/$/, "");
   const highlightedPreview = useMemo(() => (preview ? highlightPython(preview) : ""), [preview]);
-  const getBaseFileName = () => extractBaseName(loadedFileName || fileHandle?.name || "posti");
+  const projectReady = Boolean(projectName && loadedFileName);
+
+  useEffect(() => {
+    fetch(`${builderBaseUrl}/auth/status`, { credentials: "include" })
+      .then((response) => response.json())
+      .then((result: { authenticated?: boolean }) => setAuthenticated(Boolean(result.authenticated)))
+      .catch(() => setAuthenticated(false))
+      .finally(() => setAuthChecking(false));
+  }, [builderBaseUrl]);
+
+  useEffect(() => {
+    const lockApplication = () => setAuthenticated(false);
+    window.addEventListener("posti-auth-expired", lockApplication);
+    return () => window.removeEventListener("posti-auth-expired", lockApplication);
+  }, []);
 
   const markDirty = () => {
     setHasUnsavedChanges(true);
-    setPendingNewProject(false);
     setPendingDelete(false);
   };
 
@@ -648,8 +650,8 @@ const App = () => {
     content: string,
     versionLabel: string,
     baseName: string
-  ): Promise<{ blob: Blob; filename: string }> => {
-    const response = await fetch(`${builderBaseUrl}/save-script`, {
+  ): Promise<{ filename: string }> => {
+    const response = await apiFetch(`${builderBaseUrl}/save-script`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ script: content, version: versionLabel, filename: baseName })
@@ -658,9 +660,8 @@ const App = () => {
       const detail = await response.text().catch(() => "");
       throw new Error(detail || `Status ${response.status}`);
     }
-    const blob = await response.blob();
-    const filename = response.headers.get("X-Posti-Filename") ?? `${baseName}_v${versionLabel}.py`;
-    return { blob, filename };
+    const filename = response.headers.get("X-Posti-Filename") ?? `${baseName}_posti.py`;
+    return { filename };
   };
 
   useEffect(() => {
@@ -673,7 +674,6 @@ const App = () => {
   }, [theme]);
 
   const projectEmpty = profileOrder.length === 0;
-  const hasProfiles = profileOrder.length > 0;
 
   const updateCurrentProfile = (updater: (profile: Profile) => Profile) => {
     if (!currentProfile) {
@@ -922,36 +922,28 @@ const App = () => {
   const buildScriptFromState = (versionOverride?: string) =>
     buildScript(buildPayload(), versionOverride ?? projectVersion);
 
-  const refreshPreviewVersion = (version: string) => {
-    if (preview) {
-      setPreview(buildScriptFromState(version));
-    }
-  };
-
-  const handleSaveProject = async () => {
+  const handleSaveProject = async (projectNameOverride?: string) => {
     if (!hasUnsavedChanges) {
       flash("No changes to save.", "info");
       return;
     }
-    const baseName = getBaseFileName();
-    const nextVersion = bumpVersion(projectVersion);
-    const script = buildScriptFromState(nextVersion);
-    const fallbackName = `${baseName}_v${nextVersion}.py`;
+    const baseName = projectNameOverride || projectName;
+    if (!baseName) {
+      flash("Create or load a project before saving profiles.", "warning");
+      return;
+    }
+    const script = buildScriptFromState();
     try {
-      const { blob, filename } = await saveScriptToServer(script, nextVersion, baseName);
-      const saveName = filename || fallbackName;
-      downloadBlob(blob, saveName);
+      const { filename } = await saveScriptToServer(script, projectVersion, baseName);
+      const saveName = filename || `${baseName}_posti.py`;
       setLoadedFileName(saveName);
       setCurrentFileName(saveName);
-      setFileHandle(null);
+      setProjectName(baseName);
       setHasUnsavedChanges(false);
-      setProjectVersion(nextVersion);
-      refreshPreviewVersion(nextVersion);
-      flash(`Saved ${saveName} and downloaded locally.`, "success");
+      flash(`Saved ${saveName} in the project library.`, "success");
     } catch (error) {
       console.error("Server persistence failed", error);
-      downloadBlob(new Blob([script], { type: "text/x-python" }), fallbackName);
-      flash("Server persistence failed. Downloaded locally only.", "warning");
+      flash("Project could not be saved in the project library.", "error");
     }
   };
 
@@ -965,17 +957,21 @@ const App = () => {
 
   const buildBinaryUrl = `${builderBaseUrl}/build-binary`;
 
-  const handleBuildBinary = async () => {
+  const handleBuildBinary = async (projectNameOverride?: string) => {
     if (!profileOrder.length) {
       flash("Add at least one profile before building a binary.", "warning");
       return;
     }
+    const baseName = projectNameOverride || projectName;
+    if (!baseName) {
+      flash("Create or load a project before building a binary.", "warning");
+      return;
+    }
     const script = buildScriptFromState();
-    const baseName = getBaseFileName();
     const versionLabel = projectVersion;
     setIsBuildingBinary(true);
     try {
-      const response = await fetch(buildBinaryUrl, {
+      const response = await apiFetch(buildBinaryUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ script, filename: baseName, version: versionLabel })
@@ -986,7 +982,10 @@ const App = () => {
       const blob = await response.blob();
       const artifactName =
         response.headers.get("X-Posti-Filename") ??
-        parseContentDispositionFilename(response.headers.get("content-disposition"), `${baseName}_v${versionLabel}`);
+        parseContentDispositionFilename(
+          response.headers.get("content-disposition"),
+          `${baseName}_posti`
+        );
       const link = document.createElement("a");
       link.href = URL.createObjectURL(blob);
       link.download = artifactName;
@@ -1003,6 +1002,44 @@ const App = () => {
     }
   };
 
+  const handleDownloadPython = () => {
+    if (!projectReady || !projectName) {
+      flash("Create or load a project before downloading Python.", "warning");
+      return;
+    }
+    const script = buildScriptFromState();
+    const filename = `${projectName}_posti.py`;
+    downloadBlob(new Blob([script], { type: "text/x-python;charset=utf-8" }), filename);
+    flash(`Downloaded ${filename}.`, "success");
+  };
+
+  const handleUndoSave = async () => {
+    if (!loadedFileName || !projectReady) {
+      return;
+    }
+    if (hasUnsavedChanges && !window.confirm("Discard unsaved edits and restore the previous saved state?")) {
+      return;
+    }
+    setIsUndoingSave(true);
+    try {
+      const response = await apiFetch(`${builderBaseUrl}/projects/${encodeURIComponent(loadedFileName)}/undo`, {
+        method: "POST"
+      });
+      if (!response.ok) {
+        flash(response.status === 409 ? "No earlier save is available." : "The earlier save could not be restored.", "warning");
+        return;
+      }
+      const restored = await response.text();
+      importProject(restored, loadedFileName);
+      flash("The previous saved state was restored.", "success");
+    } catch (error) {
+      console.error("Unable to undo project save", error);
+      flash("The earlier save could not be restored.", "error");
+    } finally {
+      setIsUndoingSave(false);
+    }
+  };
+
   const performResetProject = () => {
     setProfiles({});
     setProfileOrder([]);
@@ -1012,27 +1049,55 @@ const App = () => {
     setSelectedStepIds(new Set());
     setPreview("");
     setLoadedFileName(null);
-    setCurrentFileName("No file loaded");
-    setFileHandle(null);
+    setProjectName("");
+    setProjectNameInput("");
+    setCurrentFileName("Name a project to begin");
     setHasUnsavedChanges(false);
     setProjectVersion(DEFAULT_VERSION);
-    setPendingNewProject(false);
     setPendingDelete(false);
-    flash("Blank project ready.", "success");
+    flash("Enter a project name to begin.", "info");
   };
 
   const handleNewProjectClick = () => {
     setPendingDelete(false);
-    if (!pendingNewProject) {
-      setPendingNewProject(true);
-      flash("You are starting a new project. Press confirm to continue.", "warning");
+    if (hasUnsavedChanges && !window.confirm("Discard unsaved changes and start a new project?")) {
       return;
     }
     performResetProject();
   };
 
-  const importProjectFromFile = async (file: File, handle: FileHandle) => {
-    const text = await file.text();
+  const handleCreateProject = async (event: FormEvent) => {
+    event.preventDefault();
+    const name = normalizeProjectName(projectNameInput);
+    if (!name) {
+      flash("Project name must contain at least one letter or number.", "warning");
+      return;
+    }
+
+    setIsCreatingProject(true);
+    try {
+      const script = buildScript({}, DEFAULT_VERSION);
+      const { filename } = await saveScriptToServer(script, DEFAULT_VERSION, name);
+      setProfiles({});
+      setProfileOrder([]);
+      setActiveProfileKey("");
+      setPreview("");
+      setProjectName(name);
+      setProjectNameInput(name);
+      setLoadedFileName(filename);
+      setCurrentFileName(filename);
+      setProjectVersion(DEFAULT_VERSION);
+      setHasUnsavedChanges(false);
+      flash(`Project ${filename} created. Profiles are ready.`, "success");
+    } catch (error) {
+      console.error("Unable to create project", error);
+      flash("Project could not be created in data/projects.", "error");
+    } finally {
+      setIsCreatingProject(false);
+    }
+  };
+
+  const importProject = (text: string, filename: string) => {
     const extracted = extractProfilesFromScript(text);
     if (!extracted) {
       flash("Could not find embedded profile data.", "error");
@@ -1065,62 +1130,65 @@ const App = () => {
     setStepForm(emptyStepForm);
     setSelectedStepIds(new Set());
     setPreview("");
-    setCurrentFileName(file.name);
-    setLoadedFileName(file.name);
-    setFileHandle(handle);
+    setCurrentFileName(filename);
+    setLoadedFileName(filename);
+    const loadedProjectName = extractProjectName(filename);
+    setProjectName(loadedProjectName);
+    setProjectNameInput(loadedProjectName);
     setHasUnsavedChanges(false);
     setProjectVersion(extracted.version ?? DEFAULT_VERSION);
-    setPendingNewProject(false);
     setPendingDelete(false);
-    flash(`Loaded ${file.name}`, "success");
+    setProjectBrowserOpen(false);
+    flash(`Loaded ${filename}`, "success");
     return true;
   };
 
-  const handleNativeFileSelection = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) {
-      return;
+  const loadProjectFromServer = async (filename: string) => {
+    setProjectBrowserLoading(true);
+    setProjectBrowserError(null);
+    try {
+      const response = await apiFetch(`${builderBaseUrl}/projects/${encodeURIComponent(filename)}`, {
+        method: "GET"
+      });
+      if (!response.ok) {
+        throw new Error(`Status ${response.status}`);
+      }
+      const text = await response.text();
+      importProject(text, filename);
+    } catch (error) {
+      console.error("Unable to load project", error);
+      setProjectBrowserError("The selected project could not be loaded.");
+    } finally {
+      setProjectBrowserLoading(false);
     }
-    await importProjectFromFile(file, null);
   };
 
   const handleLoadProject = async () => {
-    setPendingNewProject(false);
     setPendingDelete(false);
-    const picker = (window as any)?.showOpenFilePicker;
-    if (typeof picker === "function") {
-      try {
-        const [handle] = await picker({
-          multiple: false,
-          types: [
-            {
-              description: "POSTI or Python files",
-              accept: {
-                "text/x-python": [".py"],
-                "text/plain": [".txt"],
-                "application/json": [".json"]
-              }
-            }
-          ]
-        });
-        if (handle?.getFile) {
-          const file = await handle.getFile();
-          await importProjectFromFile(file, handle);
-          return;
-        }
-      } catch (error: any) {
-        if (error?.name === "AbortError") {
-          return;
-        }
-        console.error(error);
-        flash("Unable to access file picker. Falling back to manual upload.", "error");
+    setProjectBrowserOpen(true);
+    setProjectBrowserLoading(true);
+    setProjectBrowserError(null);
+    try {
+      const response = await apiFetch(`${builderBaseUrl}/projects`, { method: "GET" });
+      if (!response.ok) {
+        throw new Error(`Status ${response.status}`);
       }
+      const projects = (await response.json()) as ProjectSummary[];
+      setAvailableProjects(projects);
+    } catch (error) {
+      console.error("Unable to list projects", error);
+      setAvailableProjects([]);
+      setProjectBrowserError("The project library could not be loaded.");
+    } finally {
+      setProjectBrowserLoading(false);
     }
-    fileInputRef.current?.click();
   };
 
   const handleAddProfile = () => {
+    if (!projectReady) {
+      flash("Create or load a project first.", "warning");
+      return;
+    }
     setProfileModalState({ mode: "add" });
   };
 
@@ -1192,7 +1260,6 @@ const App = () => {
     if (!currentProfile) {
       return;
     }
-    setPendingNewProject(false);
     if (!pendingDelete) {
       setPendingDelete(true);
       flash(`Press confirm to remove "${currentProfile.label}".`, "warning");
@@ -1249,72 +1316,106 @@ const App = () => {
 
   const selectedCount = selectedStepIds.size;
 
+  if (authChecking || !authenticated) {
+    return (
+      <PinGate
+        builderBaseUrl={builderBaseUrl}
+        checking={authChecking}
+        onAuthenticated={() => setAuthenticated(true)}
+      />
+    );
+  }
+
   return (
     <div className={`forge-shell theme-${theme}`}>
       <div className="top-row">
         <div className="panel profile-toolbar">
           <div className="panel-title">Profiles</div>
-          <div className="profile-toolbar-row">
-            <div className="profile-selector">
-              <span>Active profile</span>
-              <div
-                className={`custom-select ${isProfileMenuOpen ? "open" : ""}`}
-                ref={profileSelectRef}
-              >
-                <button
-                  type="button"
-                  id="profile-select-trigger"
-                  className="custom-select-trigger"
-                  onClick={() => {
-                    if (!profileOrder.length) {
-                      return;
-                    }
-                    setIsProfileMenuOpen((prev) => !prev);
-                  }}
-                  disabled={!profileOrder.length}
-                  aria-haspopup="listbox"
-                  aria-expanded={isProfileMenuOpen}
+          <form className="project-name-control" onSubmit={handleCreateProject}>
+            <label>
+              <span>Project name</span>
+              <input
+                value={projectNameInput}
+                onChange={(event) => setProjectNameInput(event.target.value)}
+                placeholder="workstation-setup"
+                disabled={projectReady || isCreatingProject}
+                aria-describedby="project-name-hint"
+              />
+            </label>
+            <button className="btn primary" type="submit" disabled={projectReady || isCreatingProject}>
+              {isCreatingProject ? "Creating…" : projectReady ? "Created" : "Create project"}
+            </button>
+          </form>
+          <p id="project-name-hint" className="project-name-hint muted">
+            {projectReady
+              ? `Project library file: ${loadedFileName}`
+              : "Create a project file before adding profiles, or load an existing project."}
+          </p>
+          <div className={`profile-work-area ${projectReady ? "" : "locked"}`} aria-disabled={!projectReady}>
+            <div className="profile-toolbar-row">
+              <div className="profile-selector">
+                <span>Active profile</span>
+                <div
+                  className={`custom-select ${isProfileMenuOpen ? "open" : ""}`}
+                  ref={profileSelectRef}
                 >
-                  <span>{currentProfile ? currentProfile.label : "No profiles"}</span>
-                  <span className="chevron">{isProfileMenuOpen ? "▲" : "▼"}</span>
+                  <button
+                    type="button"
+                    id="profile-select-trigger"
+                    className="custom-select-trigger"
+                    onClick={() => {
+                      if (!projectReady || !profileOrder.length) {
+                        return;
+                      }
+                      setIsProfileMenuOpen((prev) => !prev);
+                    }}
+                    disabled={!projectReady || !profileOrder.length}
+                    aria-haspopup="listbox"
+                    aria-expanded={isProfileMenuOpen}
+                  >
+                    <span>{currentProfile ? currentProfile.label : "No profiles"}</span>
+                    <span className="chevron">{isProfileMenuOpen ? "▲" : "▼"}</span>
+                  </button>
+                  {isProfileMenuOpen && (
+                    <ul className="custom-select-menu" role="listbox" aria-labelledby="profile-select-trigger">
+                      {profileOrder.map((key) => (
+                        <li key={key}>
+                          <button
+                            type="button"
+                            className={key === activeProfileKey ? "active" : ""}
+                            onClick={() => {
+                              setActiveProfileKey(key);
+                              setIsProfileMenuOpen(false);
+                            }}
+                          >
+                            {profiles[key]?.label ?? key}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
+              <div className="button-row compact profile-actions">
+                <button className="btn ghost" onClick={handleAddProfile} disabled={!projectReady}>
+                  Add
                 </button>
-                {isProfileMenuOpen && (
-                  <ul className="custom-select-menu" role="listbox" aria-labelledby="profile-select-trigger">
-                    {profileOrder.map((key) => (
-                      <li key={key}>
-                        <button
-                          type="button"
-                          className={key === activeProfileKey ? "active" : ""}
-                          onClick={() => {
-                            setActiveProfileKey(key);
-                            setIsProfileMenuOpen(false);
-                          }}
-                        >
-                          {profiles[key]?.label ?? key}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
+                <button className="btn ghost" onClick={handleEditProfile} disabled={!currentProfile}>
+                  Edit
+                </button>
+                <button
+                  className={`btn ghost ${pendingDelete ? "danger" : ""}`}
+                  onClick={handleRemoveClick}
+                  disabled={!currentProfile}
+                >
+                  {pendingDelete ? "Confirm" : "Remove"}
+                </button>
               </div>
             </div>
-            <div className="button-row compact profile-actions">
-              <button className={`btn ghost ${hasProfiles ? "" : "pulse"}`} onClick={handleAddProfile}>
-                Add
-              </button>
-              <button className="btn ghost" onClick={handleEditProfile} disabled={!currentProfile}>
-                Edit
-              </button>
-              <button
-                className={`btn ghost ${pendingDelete ? "danger" : ""}`}
-                onClick={handleRemoveClick}
-                disabled={!currentProfile}
-              >
-                {pendingDelete ? "Confirm" : "Remove"}
-              </button>
-            </div>
+            {!currentProfile && (
+              <p className="muted">{projectReady ? "No profiles yet. Start by adding one." : "Profiles are locked."}</p>
+            )}
           </div>
-          {!currentProfile && <p className="muted">No profiles yet. Start by adding one.</p>}
         </div>
 
         <div className="panel banner-panel">
@@ -1343,11 +1444,17 @@ const App = () => {
           <div className="panel-title">Operations</div>
           <div className="operations-actions">
             <div className="operation-button-stack">
+              <button className="btn ghost" onClick={handleNewProjectClick}>
+                New project
+              </button>
+            </div>
+            <div className="operation-button-stack">
               <button
-                className={`btn ghost ${pendingNewProject ? "danger" : ""}`}
-                onClick={handleNewProjectClick}
+                className="btn ghost"
+                onClick={() => void handleUndoSave()}
+                disabled={!projectReady || isUndoingSave}
               >
-                {pendingNewProject ? "Confirm" : "New project"}
+                {isUndoingSave ? "Restoring…" : "Undo last save"}
               </button>
             </div>
             <div className="operation-button-stack">
@@ -1363,7 +1470,19 @@ const App = () => {
             <div className="operation-button-stack">
               <button
                 className="btn ghost"
-                onClick={handleBuildBinary}
+                onClick={handleDownloadPython}
+                disabled={!projectReady}
+                title="Download the current editor state as a runnable Python script."
+              >
+                Download Python
+              </button>
+            </div>
+            <div className="operation-button-stack">
+              <button
+                className="btn ghost"
+                onClick={() => {
+                  void handleBuildBinary();
+                }}
                 disabled={isBuildingBinary}
                 title="Python libraries are build in. Binary is independed – You can run not having Python installed."
               >
@@ -1380,7 +1499,6 @@ const App = () => {
             <div className="file-indicator operations-file">
               <div className="file-meta-row">
                 <span>Current file</span>
-                <span className="version-chip">v{projectVersion}</span>
               </div>
               <strong>{hasUnsavedChanges ? `${currentFileName} *` : currentFileName}</strong>
             </div>
@@ -1600,19 +1718,128 @@ const App = () => {
         />
       )}
 
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".py,.txt,.json"
-        hidden
-        onChange={handleNativeFileSelection}
-        data-testid="file-input"
-        aria-label="Select a posti.py project to load"
-        title="Select a posti.py project to load"
-      />
+      {projectBrowserOpen && (
+        <ProjectBrowserModal
+          projects={availableProjects}
+          loading={projectBrowserLoading}
+          error={projectBrowserError}
+          onCancel={() => setProjectBrowserOpen(false)}
+          onLoad={(filename) => {
+            void loadProjectFromServer(filename);
+          }}
+        />
+      )}
     </div>
   );
 };
+
+type PinGateProps = {
+  builderBaseUrl: string;
+  checking: boolean;
+  onAuthenticated: () => void;
+};
+
+const PinGate = ({ builderBaseUrl, checking, onAuthenticated }: PinGateProps) => {
+  const [pin, setPin] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleLogin = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!/^\d{4,}$/.test(pin)) {
+      setError("PIN must contain at least four digits.");
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      const response = await fetch(`${builderBaseUrl}/auth/login`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin })
+      });
+      if (!response.ok) {
+        setError(response.status === 429 ? "Too many attempts. Try again later." : "Incorrect PIN.");
+        return;
+      }
+      setPin("");
+      onAuthenticated();
+    } catch {
+      setError("Posti is unavailable. Check the server connection.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <main className="pin-gate">
+      <form className="pin-card" onSubmit={handleLogin}>
+        <img src="/posti_banner_256.png" alt="Posti" />
+        <h1>Unlock Posti</h1>
+        <p>{checking ? "Checking your session…" : "Enter the application PIN to continue."}</p>
+        {!checking && (
+          <>
+            <input
+              type="password"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              minLength={4}
+              autoComplete="current-password"
+              value={pin}
+              onChange={(event) => setPin(event.target.value.replace(/\D/g, ""))}
+              aria-label="Application PIN"
+              autoFocus
+            />
+            {error && <p className="error">{error}</p>}
+            <button className="btn primary" type="submit" disabled={submitting}>
+              {submitting ? "Unlocking…" : "Unlock"}
+            </button>
+          </>
+        )}
+      </form>
+    </main>
+  );
+};
+
+type ProjectBrowserModalProps = {
+  projects: ProjectSummary[];
+  loading: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onLoad: (filename: string) => void;
+};
+
+const ProjectBrowserModal = ({ projects, loading, error, onCancel, onLoad }: ProjectBrowserModalProps) => (
+  <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="project-browser-title">
+    <div className="modal project-browser">
+      <h3 id="project-browser-title">Project library</h3>
+      <p className="muted">Projects stored in data/projects</p>
+      {loading && <p className="muted">Loading projects…</p>}
+      {!loading && error && <p className="error">{error}</p>}
+      {!loading && !error && projects.length === 0 && <p className="muted">No saved projects yet.</p>}
+      {!error && projects.length > 0 && (
+        <ul className="project-list">
+          {projects.map((project) => (
+            <li key={project.filename}>
+              <button type="button" onClick={() => onLoad(project.filename)} disabled={loading}>
+                <strong>{project.filename}</strong>
+                <span>
+                  {new Date(project.modified_at * 1000).toLocaleString()} · {Math.max(1, Math.ceil(project.size / 1024))} KiB
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="button-row">
+        <button type="button" className="btn ghost" onClick={onCancel}>
+          Close
+        </button>
+      </div>
+    </div>
+  </div>
+);
 
 type ProfileModalProps = {
   mode: "add" | "edit";

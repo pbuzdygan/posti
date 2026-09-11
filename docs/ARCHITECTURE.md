@@ -11,13 +11,13 @@ Posti Forge is a full-stack web application packaged as a single Docker image. T
 - A **React + Vite** single-page application (SPA) that provides the designer UI.
 - A **FastAPI** backend that:
   - Serves the built frontend assets.
-  - Persists projects (`posti_vX.Y.py`) and compiled binaries.
-  - Exposes REST endpoints used by the frontend to save and build.
+  - Persists named projects (`project-name_posti.py`), their limited history, and compiled binaries.
+  - Exposes REST endpoints used by the frontend to list, load, save and build.
   - Provides a health check endpoint (`/api/healthz`).
 
 Persistent data is stored outside the container in a bind-mounted `data/` directory:
 
-- `data/projects` – Versioned posti.py scripts saved via “Save project”.
+- `data/projects` – Server-side project library; `.history` retains up to ten earlier saves per project.
 - `data/generated_binary` – PyInstaller binaries produced via “Build Binary”.
 
 ---
@@ -48,7 +48,7 @@ Persistent data is stored outside the container in a bind-mounted `data/` direct
 
 ### Stack
 
-- **React 18** with functional components and hooks.
+- **React 19** with functional components and hooks.
 - **Vite** for development and production builds.
 - **TypeScript** for type safety in the SPA.
 - CSS modules collected in `src/styles.css`.
@@ -58,13 +58,15 @@ Persistent data is stored outside the container in a bind-mounted `data/` direct
 - `src/App.tsx` – Main React component. Handles:
   - Profile CRUD (state management for profiles and steps).
   - Step composer state, multi-selection logic and bulk actions.
-  - Operations panel actions (New project, Load/Save, Build Binary).
+  - Named project creation, locked/unlocked profile state, and operations actions
+    (New project, Load/Save, Build Binary).
   - posti.py preview generation, copy-to-clipboard, syntax highlighting.
   - PWA install banner and theme toggle.
   - UI layout (Profiles, Operations, Step composer, Steps, Preview).
 - `src/postiTemplate.ts` – Defines the template for the generated `posti.py`. Provides helper functions:
   - `buildScript` (serialise profiles to Python).
   - `extractProfilesFromScript` (import an existing posti.py back into the designer).
+- `src/projectNames.ts` – Normalises project names and reads them from current or legacy filenames.
 - `src/data/content.ts` – Static data for marketing copy / placeholders.
 - `src/main.tsx` – Entry point registering the service worker and mounting `<App />`.
 - `public/manifest.webmanifest` – PWA manifest.
@@ -75,14 +77,20 @@ Persistent data is stored outside the container in a bind-mounted `data/` direct
 
 - `POST /api/save-script`
   - Body: `{ script: string, version: string, filename?: string }`.
-  - Saves the `posti.py` on the server (if possible) and streams it back.
+  - Saves the named `posti.py` in the server-side project library.
+- `GET /api/projects`
+  - Returns the project files available in the server-side library.
+- `GET /api/projects/{filename}`
+  - Returns the selected project after validating that its path remains inside the library.
+- `POST /api/projects/{filename}/undo`
+  - Restores and consumes the newest retained save for the selected project.
 - `POST /api/build-binary`
   - Body: `{ script: string, version?: string, filename?: string }`.
   - Runs PyInstaller and streams the resulting binary.
 - `GET /api/healthz`
   - Used for monitoring / readiness if needed.
 
-Internally the frontend uses helper functions for versioning (e.g. bumping `1.3 → 1.4`), file-name sanitisation, and step/profile serialization.
+Internally the frontend uses helpers for file-name sanitisation and step/profile serialization.
 
 ---
 
@@ -91,6 +99,8 @@ Internally the frontend uses helper functions for versioning (e.g. bumping `1.3 
 ### Runtime
 
 - **FastAPI** application served by **uvicorn**.
+- A successful `POSTI_APP_PIN` login creates a random, expiring HTTP-only session cookie.
+- Protected project and build endpoints reject requests without that session.
 - Single module `builder_service/main.py` (copied as `main.py` in the container).
 - Python dependencies listed in `builder_service/requirements.txt` (FastAPI, Uvicorn, PyInstaller).
 
@@ -103,17 +113,21 @@ Internally the frontend uses helper functions for versioning (e.g. bumping `1.3 
 2. **API endpoints**
    - `GET /api/healthz` – returns `{ "status": "ok" }`.
    - `POST /api/save-script`
-     - Writes the provided script to `PROJECT_ROOT` (`/app/data/projects`).
-     - Sets executable mode (`0755`) if possible.
+     - Requires a PIN-authenticated session, validates the input and writes atomically to
+       `PROJECT_ROOT` (`/app/data/projects`).
+     - Sets executable mode (`0755`).
      - Returns the saved file as a streamed response with headers describing the filename and relative path.
+   - `GET /api/projects` and `GET /api/projects/{filename}`
+     - Require a PIN-authenticated session and provide the project library list and contents.
    - `POST /api/build-binary`
+     - Requires a PIN-authenticated session.
      - Creates a temporary build directory under `BINARY_ROOT`.
-     - Runs `pyinstaller --onefile` to build `posti_cli`.
-     - Copies the resulting binary to `generated_binary`, sets executable bits, and streams it back.
+     - Runs one PyInstaller job at a time in a worker thread with a timeout.
+     - Atomically persists the binary, streams an isolated copy, and removes stale temporary builds.
 
 3. **Data directory handling**
-   - `ensure_dir` attempts to create `data/`, `projects` and `generated_binary` but ignores permission errors (allowing host-managed directories).
-   - At startup, `_check_data_dir` logs warnings if the directories are missing or not writable, without crashing the app.
+   - `ensure_dir` creates `data/`, `projects` and `generated_binary` when permitted.
+   - Startup fails if persistence is not writable by the configured UID/GID.
 
 4. **Logging**
    - Uses `logging.getLogger("posti.builder")`.
@@ -133,17 +147,18 @@ Both directories are expected to be bind-mounted from the host using Docker (see
 
 Multi-stage build:
 
-1. **Frontend stage (Node 20 alpine)**
+1. **Frontend stage (Node 24 alpine)**
    - Installs frontend dependencies (`npm ci`) and runs `npm run build`.
    - Outputs a static bundle under `/web/dist`.
 
 2. **Runtime stage (Python 3.11 slim)**
-   - Installs system dependencies (`build-essential` for PyInstaller).
+   - Installs only `binutils`, required by PyInstaller on Linux.
    - Copies backend requirements and installs them with `pip`.
    - Copies `builder_service/main.py` as `/app/main.py`.
    - Copies built frontend (`/web/dist`) into `/app/static`.
    - Ensures `/app/data` exists (host bind mount provides actual storage).
-   - Starts FastAPI via `uvicorn main:app`.
+   - Runs as non-root UID/GID `1000:1000` by default.
+   - Starts Uvicorn with connection and keep-alive limits.
 
 ---
 
@@ -156,32 +171,40 @@ services:
   posti:
     build: .
     container_name: posti
+    user: "${POSTI_UID:-1000}:${POSTI_GID:-1000}"
+    environment:
+      HOME: /tmp
+      POSTI_APP_PIN: "${POSTI_APP_PIN:?Set POSTI_APP_PIN in .env}"
     ports:
-      - "8012:8000"
+      - "127.0.0.1:8012:8000"
     volumes:
       - ./data:/app/data
 ```
 
 Notes:
 
-- Port 8012 on the host maps to FastAPI port 8000.
+- Port 8012 on localhost maps to FastAPI port 8000.
 - `./data` on the host is bind-mounted to `/app/data`.
-- You can set the `user:` key if you need the container to run as a specific UID/GID (e.g. to match NAS ACLs).
+- `user:` determines ownership of files on the bind mount; the host directories
+  must already be writable by the selected numeric UID/GID.
+- Compose uses a read-only root filesystem, drops all Linux capabilities, enables
+  `no-new-privileges`, and applies process, CPU and memory limits.
 - To use a prebuilt image from GHCR, replace `build: .` with `image: ghcr.io/<OWNER>/<REPO>:latest`.
 
 ---
 
 ## CI/CD
 
-Located at `.github/workflows/docker-image.yml`:
+- `.github/workflows/ci.yml` runs backend/frontend tests, audits, type checking,
+  and the frontend build for pushes to `main` and `dev` and for pull requests.
+  It does not build or publish a container image.
+- `.github/workflows/docker-image.yml` builds and publishes a container only
+  when a GitHub Release is published:
+  - releases targeting `main` use `x.x.x` and publish `latest` plus `x.x.x`;
+  - releases targeting `dev` use `devx.x.x` and publish `dev_latest` plus `devx.x.x`.
 
-- Builds the Docker image on pushes to `main` and on GitHub releases.
-- Publishes images to GitHub Container Registry with tags:
-  - `ghcr.io/<OWNER>/<REPO>:latest` (main branch)
-  - `ghcr.io/<OWNER>/<REPO>:<tag>` (for tags/releases)
-  - `ghcr.io/<OWNER>/<REPO>:edge` (for non-tag pushes if desired via the logic in the workflow)
-
-The workflow uses `docker/login-action`, `docker/setup-buildx-action`, and `docker/build-push-action`.
+The publishing workflow validates the release target, tag format, and branch
+ancestry before logging in to GHCR and running the Docker build and pushes.
 
 ---
 
@@ -198,18 +221,25 @@ The workflow uses `docker/login-action`, `docker/setup-buildx-action`, and `dock
 
 ## Data flow summary
 
-1. **User interacts with SPA**: builds profiles, steps, and previews.
-2. **Save project**:
+1. **Create or load project**:
+   - Confirming the inline project name persists the initial canonical project script.
+   - Profile editing remains locked until that save succeeds or a library file is loaded.
+2. **User interacts with SPA**: builds profiles, steps, and previews.
+3. **Save project**:
    - Frontend serializes state to a Python script.
    - Sends it to `/api/save-script`.
-   - Backend writes to `./data/projects` and streams the file back.
-   - Frontend downloads the file and shows a success banner.
-3. **Build binary**:
-   - Frontend sends script, version, and base filename to `/api/build-binary`.
+   - Backend archives the previous state and atomically replaces the named file in `./data/projects`.
+   - Frontend treats the server-side library as the source of truth and shows a success banner.
+4. **Load project**:
+   - Frontend lists `/api/projects` and requests the selected file from `/api/projects/{filename}`.
+   - Existing scripts from older releases remain importable.
+5. **Build binary**:
+   - Frontend sends the script and project name to `/api/build-binary`.
    - Backend runs PyInstaller in a temp dir and stores the binary under `./data/generated_binary`.
    - Binary is streamed back; frontend downloads it.
-4. **Persistence**:
-   - If `./data/projects` or `./data/generated_binary` are missing or read-only on the host, the backend logs warnings but still allows browser-only downloads.
+6. **Persistence**:
+   - If `./data/projects` or `./data/generated_binary` are not writable, startup
+     fails so an ownership or ACL error cannot be mistaken for successful persistence.
 
 ---
 
@@ -225,7 +255,7 @@ The workflow uses `docker/login-action`, `docker/setup-buildx-action`, and `dock
   - Run `npm run build` to produce the bundle copied into the container.
 - **Persistent storage tweaks**:
   - If running on NAS/Synology, create `data/projects` and `data/generated_binary` with the desired ACLs before starting the container.
-  - The backend will not change permissions; it only logs warnings if it cannot write.
+  - The backend does not change host ownership and fails startup if it cannot write.
 - **PWA/Offline customization**:
   - Adjust `public/sw.js` if additional assets need caching.
   - Update `manifest.webmanifest` with new icons or metadata.
@@ -235,20 +265,20 @@ The workflow uses `docker/login-action`, `docker/setup-buildx-action`, and `dock
 ## Troubleshooting
 
 - **Container logs show `[DATA] … is not writable`**:
-  - The backend cannot write to the bind-mounted directory. Check host/NAS permissions.
-  - Downloads in the browser still work, but nothing is persisted server-side.
-- **“Saved posti_vX.Y.py” banner but file not on host**:
-  - Same as above: the file was created inside `/app/data/projects` but the host mount is read-only or absent.
-  - Ensure `./data/projects` exists and is writable before running the container.
+  - The backend cannot write to the bind-mounted directory and exits intentionally.
+  - Match host/NAS ownership or ACLs to `POSTI_UID` and `POSTI_GID`.
+- **A saved project is missing from the project library**:
+  - Ensure both data subdirectories exist and are writable before starting the container.
+- **HTTP 401 from project/build APIs**:
+  - Sign in on the PIN screen again; sessions expire and are cleared when the backend restarts.
 - **White screen after refresh / MIME errors**:
   - Clear the browser’s service worker (DevTools → Application → Service Workers → Unregister) so the latest `sw.js` is used.
 - **PyInstaller failures**:
   - Check backend logs for stderr from PyInstaller (e.g. missing dependencies).
-  - Ensure the image has access to required system packages (already includes `build-essential`).
+  - Increase the configured timeout/resources if needed; the image includes `binutils`.
 
 ---
 
 ## Conclusion
 
 Posti Forge combines a modern web UI with a Python-based builder service to streamline the creation of `posti.py` scripts and standalone binaries. The Dockerised architecture keeps deployment simple: bind-mount a `data/` directory, expose one port, and everything else happens inside the container. This document should give you the context needed to explore, extend, or debug the system. Happy hacking!
-

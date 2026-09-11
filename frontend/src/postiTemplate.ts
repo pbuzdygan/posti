@@ -22,12 +22,12 @@ except Exception:
 
 
 # === POSTI PROFILE DATA START ===
-PROFILE_DATA_JSON = r"""__PROFILE_DATA__"""
+PROFILE_DATA_JSON = __PROFILE_DATA_LITERAL__
 # === POSTI PROFILE DATA END ===
 PROFILE_DATA = json.loads(PROFILE_DATA_JSON)
 
 # === POSTI VERSION METADATA ===
-POSTI_VERSION = "__POSTI_VERSION__"
+POSTI_VERSION = __POSTI_VERSION_LITERAL__
 
 
 # === TERMINAL COLORS & DISPLAY HELPERS ===
@@ -306,7 +306,10 @@ export type SerializedProfiles = Record<string, SerializedProfile>;
 
 export function buildScript(payload: SerializedProfiles, version = "1.0"): string {
   const profileJson = JSON.stringify(payload, null, 4);
-  return POSTI_TEMPLATE.replace("__PROFILE_DATA__", profileJson).replace("__POSTI_VERSION__", version);
+  return POSTI_TEMPLATE.replace("__PROFILE_DATA_LITERAL__", JSON.stringify(profileJson)).replace(
+    "__POSTI_VERSION_LITERAL__",
+    JSON.stringify(version)
+  );
 }
 
 export function extractProfilesFromScript(
@@ -321,15 +324,22 @@ export function extractProfilesFromScript(
     return null;
   }
   const block = text.slice(start, end + END_MARKER.length);
-  const match = block.match(/PROFILE_DATA_JSON\s*=\s*r?"""([\s\S]*?)"""/);
-  if (!match) {
+  const legacyMatch = block.match(/PROFILE_DATA_JSON\s*=\s*r?"""([\s\S]*?)"""/);
+  const literalMatch = block.match(/PROFILE_DATA_JSON\s*=\s*("(?:\\.|[^"\\])*")/s);
+  if (!legacyMatch && !literalMatch) {
     return null;
   }
   try {
-    const payload = JSON.parse(match[1]) as SerializedProfiles;
+    const profileJson = literalMatch ? (JSON.parse(literalMatch[1]) as string) : legacyMatch![1];
+    const payload = JSON.parse(profileJson) as SerializedProfiles;
     const order = Object.keys(payload);
-    const versionMatch = text.match(/POSTI_VERSION\s*=\s*["']([^"']+)["']/);
-    const version = versionMatch ? versionMatch[1] : "1.0";
+    const versionLiteralMatch = text.match(/POSTI_VERSION\s*=\s*("(?:\\.|[^"\\])*")/s);
+    const legacyVersionMatch = text.match(/POSTI_VERSION\s*=\s*["']([^"']+)["']/);
+    const version = versionLiteralMatch
+      ? (JSON.parse(versionLiteralMatch[1]) as string)
+      : legacyVersionMatch
+        ? legacyVersionMatch[1]
+        : "1.0";
     return { payload, order, version };
   } catch {
     return null;
