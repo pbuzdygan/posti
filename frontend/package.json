@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json"
   },
   "dependencies": {
-    "react": "^19.3.0",
+    "react": "^19.3.1",
     "react-dom": "^19.3.0"
   },
   "devDependencies": {
